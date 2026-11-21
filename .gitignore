@@ -1,0 +1,8 @@
+Niepotrzebne/build/
+Niepotrzebne/Nocturne.app/
+Niepotrzebne/samples/
+Niepotrzebne/warianty/
+Niepotrzebne/icon/
+.DS_Store
+.env
+.build/
