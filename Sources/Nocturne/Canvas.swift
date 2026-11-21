@@ -13,6 +13,8 @@ final class CanvasView: MTKView, MTKViewDelegate {
     private var extent = CGRect.zero
     var token = -1
     var zoomToken = 0
+    var onPoint: ((CGPoint, Int) -> Bool)?
+    private var pointing = false
 
     var image: CIImage? {
         didSet {
@@ -129,11 +131,26 @@ final class CanvasView: MTKView, MTKViewDelegate {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(nil)
+        if extent.width > 0, let onPoint, onPoint(imagePoint(event), 0) {
+            pointing = true
+            return
+        }
         if event.clickCount == 2 { toggleZoom(at: event) }
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if pointing {
+            _ = onPoint?(imagePoint(event), 1)
+            return
+        }
         pan(dx: event.deltaX, dy: -event.deltaY)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if pointing {
+            pointing = false
+            _ = onPoint?(imagePoint(event), 2)
+        }
     }
 
     override func scrollWheel(with event: NSEvent) {
@@ -167,7 +184,12 @@ struct Canvas: NSViewRepresentable {
     @EnvironmentObject var model: AppModel
 
     func makeNSView(context: Context) -> CanvasView {
-        CanvasView(engine: model.engine)
+        let view = CanvasView(engine: model.engine)
+        let model = model
+        view.onPoint = { point, phase in
+            MainActor.assumeIsolated { model.canvasPoint(point, phase: phase) }
+        }
+        return view
     }
 
     func updateNSView(_ view: CanvasView, context: Context) {

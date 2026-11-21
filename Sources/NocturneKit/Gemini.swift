@@ -59,11 +59,17 @@ public final class Gemini: @unchecked Sendable {
     grade: shadowHue [0,360], shadowAmount [0,100], highlightHue [0,360], highlightAmount [0,100], balance [-100,100]
     splash: amount [0,100], hue [0,360], range [5,180] (color splash: everything outside one band of hues turns black and white; hue is the color that stays, 0 red, 30 orange, 55 yellow, 120 green, 210 blue, 300 magenta; range is how wide the band is)
     vignette: amount [-100,100] (negative darkens the edges), size [0,100]
+    lamp: a virtual 3D light placed in the scene, lit along the real shapes with shadows. x [0,100] from the left edge, y [0,100] from the top edge, height [0,100] (low gives raking light and long shadows), intensity [0,100], radius [0,100] (reach), warmth [-100,100], shadow [0,100], ambient [-100,0] (dims everything else for drama)
+    bokeh: lens blur from the depth map. amount [0,100], focus [0,100] (0 is the far distance, 100 the nearest thing), range [0,100] (size of the sharp zone)
+    halation: amount [0,100], spread [0,100] (red film glow around bright lights)
+    bloom: amount [0,100], spread [0,100], threshold [0,100] (white glow from highlights)
+    streaks: amount [0,100], length [0,100] (blue anamorphic streaks from bright lights)
+    fringe: amount [0,100] (chromatic aberration toward the corners)
     mist: amount [0,100], spread [0,100] (soft glowing diffusion, like a Pro-Mist filter)
     grain: amount [0,100], size [0,100]
     mask is optional and limits a step to one region: "sky", "subject" (the main object), "person", "background" (everything except the subject), "near" (the foreground), "far" (the distance). Leave mask out to affect the whole photo. Use a mask whenever the user names a region: a darker sky is a light step with mask sky and negative exposure, a brighter person is a light step with mask person.
     Black and white: a color step with saturation -100. Black and white with one thing left in color: when that thing is defined by its color (the sun, a sunset glow, a red car, green grass) use splash with amount 100; when it is the main subject or a person use a color step with saturation -100 and mask background.
-    Rules: 1 to 5 steps, a kind may repeat only with a different mask, only params that change, tasteful values (most within 40). name is a short English title of 2 to 4 words. note is one short sentence in the user's language about what you did. If earlier steps of yours are listed, return the full new list that should replace them: keep what still fits and change what the user asks for.
+    Rules: 1 to 6 steps, a kind may repeat only with a different mask, only params that change, tasteful values (most within 40). name is a short English title of 2 to 4 words. note is one short sentence in the user's language about what you did. If earlier steps of yours are listed, return the full new list that should replace them: keep what still fits and change what the user asks for.
     """
 
     static let nameSystem = """

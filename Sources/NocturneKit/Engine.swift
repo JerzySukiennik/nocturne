@@ -148,6 +148,64 @@ public final class Engine: @unchecked Sendable {
                     vec(2), vec(16), vec(6), vec(20), vec(10), vec(24),
                     step.value("amount") / 100
                 ])
+            case .halation:
+                let high = kernels.high.apply(extent: extent, arguments: [img, 0.45]) ?? img
+                let soft = softCopy(high, sigma: long * (0.004 + 0.02 * step.value("spread") / 100), down: 4)
+                next = kernels.glow.apply(extent: extent, arguments: [
+                    img, soft, CIVector(x: 1.0, y: 0.26, z: 0.10, w: 1), step.value("amount") / 100 * 1.4
+                ])
+            case .bloom:
+                let threshold = pow(0.4 + 0.55 * step.value("threshold") / 100, 2.2)
+                let high = kernels.high.apply(extent: extent, arguments: [img, threshold]) ?? img
+                let soft = softCopy(high, sigma: long * (0.012 + 0.05 * step.value("spread") / 100), down: 8)
+                next = kernels.glow.apply(extent: extent, arguments: [
+                    img, soft, CIVector(x: 1, y: 1, z: 1, w: 1), step.value("amount") / 100 * 1.2
+                ])
+            case .streaks:
+                let high = kernels.high.apply(extent: extent, arguments: [img, 0.55]) ?? img
+                let soft = smear(high, length: (8 + 56 * step.value("length") / 100) * (long / 3872))
+                next = kernels.glow.apply(extent: extent, arguments: [
+                    img, soft, CIVector(x: 0.35, y: 0.62, z: 1.0, w: 1), step.value("amount") / 100 * 1.6
+                ])
+            case .fringe:
+                let k = step.value("amount") / 100 * 0.006
+                next = kernels.fringe.apply(extent: extent, arguments: [img, zoomed(img, 1 + k), zoomed(img, 1 - k)])
+            case .bokeh:
+                guard let depth = masks?.depth else { continue }
+                let d = stretch(depth, to: extent)
+                guard let focus = kernels.focus.apply(extent: extent, arguments: [
+                    d, step.value("focus") / 100, step.value("range") / 100 * 0.4
+                ]) else { continue }
+                next = img.clampedToExtent().applyingFilter("CIMaskedVariableBlur", parameters: [
+                    "inputMask": focus, "inputRadius": long * 0.012 * step.value("amount") / 100
+                ]).cropped(to: extent)
+            case .lamp:
+                guard let depth = masks?.depth else { continue }
+                let s = 640 / long
+                let map = CGRect(x: 0, y: 0, width: (extent.width * s).rounded(), height: (extent.height * s).rounded())
+                let d = stretch(depth, to: map).clampedToExtent().applyingGaussianBlur(sigma: 2).cropped(to: map).clampedToExtent()
+                let relief = 640 * 0.35
+                let warmth = step.value("warmth") / 100
+                let tone: (Double, Double, Double) = warmth >= 0 ? (1.0, 0.70, 0.40) : (0.55, 0.75, 1.0)
+                let w = abs(warmth)
+                let color = CIVector(x: 1 + (tone.0 - 1) * w, y: 1 + (tone.1 - 1) * w, z: 1 + (tone.2 - 1) * w, w: 1)
+                let args: [Any] = [
+                    d,
+                    CIVector(x: step.value("x") / 100 * map.width, y: (1 - step.value("y") / 100) * map.height),
+                    relief * (0.15 + 1.6 * step.value("height") / 100),
+                    relief,
+                    640 * (0.08 + 0.9 * step.value("radius") / 100),
+                    color,
+                    step.value("intensity") / 100 * 2.5,
+                    step.value("shadow") / 100
+                ]
+                guard let light = kernels.lamp.apply(extent: map, roiCallback: { _, _ in map.insetBy(dx: -4, dy: -4) }, arguments: args) else { continue }
+                let guide = scaled(img, maxEdge: 1280)
+                let soft = light.clampedToExtent().applyingGaussianBlur(sigma: 1.3).cropped(to: map)
+                let fine = stretch(soft, to: guide.extent).applyingFilter("CIGuidedFilter", parameters: [
+                    "inputGuideImage": guide, "inputRadius": 5.0, "inputEpsilon": 0.0015
+                ]).cropped(to: guide.extent)
+                next = kernels.relight.apply(extent: extent, arguments: [img, stretch(fine, to: extent), step.value("ambient") / 100 * 2.0])
             }
             guard let next else { continue }
             if let kind = step.mask {
@@ -171,6 +229,30 @@ public final class Engine: @unchecked Sendable {
         return blurred.clampedToExtent()
             .transformed(by: CGAffineTransform(scaleX: down, y: down))
             .cropped(to: e)
+    }
+
+    func stretch(_ image: CIImage, to rect: CGRect) -> CIImage {
+        let e = image.extent
+        let t = CGAffineTransform(translationX: -e.minX, y: -e.minY)
+            .concatenating(CGAffineTransform(scaleX: rect.width / e.width, y: rect.height / e.height))
+            .concatenating(CGAffineTransform(translationX: rect.minX, y: rect.minY))
+        return image.clampedToExtent().transformed(by: t).cropped(to: rect)
+    }
+
+    func zoomed(_ image: CIImage, _ factor: CGFloat) -> CIImage {
+        let e = image.extent
+        let t = CGAffineTransform(translationX: -e.midX, y: -e.midY)
+            .concatenating(CGAffineTransform(scaleX: factor, y: factor))
+            .concatenating(CGAffineTransform(translationX: e.midX, y: e.midY))
+        return image.clampedToExtent().transformed(by: t).cropped(to: e)
+    }
+
+    func smear(_ image: CIImage, length: CGFloat) -> CIImage {
+        let e = image.extent
+        let k = max(length, 2)
+        let small = image.transformed(by: CGAffineTransform(scaleX: 1 / k, y: 0.5))
+        let blurred = small.clampedToExtent().applyingGaussianBlur(sigma: 2).cropped(to: small.extent)
+        return blurred.clampedToExtent().transformed(by: CGAffineTransform(scaleX: k, y: 2)).cropped(to: e)
     }
 
     public func scaled(_ image: CIImage, maxEdge: CGFloat) -> CIImage {

@@ -95,14 +95,76 @@ private struct Sides: View {
 }
 
 private struct Rail: View {
+    @EnvironmentObject var model: AppModel
+    @State private var lensOpen = false
+
     var body: some View {
-        VStack(spacing: 4) {
-            ForEach(StepKind.tools, id: \.self) { kind in
-                RailButton(kind: kind)
+        HStack(spacing: 8) {
+            VStack(spacing: 4) {
+                ForEach(StepKind.tone, id: \.self) { kind in
+                    RailButton(kind: kind)
+                }
+                Rectangle().fill(Color.white.opacity(0.14)).frame(width: 20, height: 1).padding(.vertical, 3)
+                RailButton(kind: .lamp)
+                lensButton
+            }
+            .padding(6)
+            .glass(RoundedRectangle(cornerRadius: 14))
+            if lensOpen {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(StepKind.lens, id: \.self) { kind in
+                        LensRow(kind: kind) { lensOpen = false }
+                    }
+                }
+                .padding(6)
+                .glass(RoundedRectangle(cornerRadius: 14))
             }
         }
-        .padding(6)
-        .glass(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var lensButton: some View {
+        let active: Bool = lensOpen || model.recipe.steps.contains { $0.id == model.selectedStep && StepKind.lens.contains($0.kind) }
+        return Button {
+            lensOpen.toggle()
+        } label: {
+            Image(systemName: "camera.filters")
+                .font(.system(size: 15))
+                .frame(width: 32, height: 32)
+                .foregroundStyle(active ? Color.white : Color.white.opacity(0.7))
+                .background(active ? Color.white.opacity(0.14) : Color.clear, in: ConcentricRectangle())
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Lens Lab")
+        .accessibilityLabel("Lens Lab")
+    }
+}
+
+private struct LensRow: View {
+    @EnvironmentObject var model: AppModel
+    let kind: StepKind
+    let done: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button {
+            model.focusTool(kind)
+            done()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: kind.symbol).font(.system(size: 13)).frame(width: 18)
+                Text(kind.title).font(.system(size: 13))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(Color.white.opacity(0.9))
+            .padding(.horizontal, 8)
+            .frame(width: 138, height: 28)
+            .background(hover ? Color.white.opacity(0.1) : Color.clear, in: ConcentricRectangle())
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .accessibilityLabel(kind.title)
     }
 }
 
@@ -123,7 +185,7 @@ private struct RailButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(kind.title)
+        .help(kind == .lamp ? "Lamp (click again to add another)" : kind.title)
         .accessibilityLabel(kind.title)
     }
 }
@@ -205,6 +267,12 @@ private struct StepRow: View {
             .contentShape(Rectangle())
             .onTapGesture { model.selectedStep = open ? nil : step.id }
             if open {
+                if let hint = step.kind.hint {
+                    Text(hint)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.accent.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 ForEach(step.kind.params) { spec in
                     ParamRow(step: step, spec: spec)
                 }

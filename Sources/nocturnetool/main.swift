@@ -129,6 +129,31 @@ case "match":
     let image = engine.scaled(engine.render(source.image, recipe: Recipe(steps: [step])), maxEdge: 1200)
     try engine.export(image, to: URL(fileURLWithPath: args[3]), properties: [:])
 
+case "lens":
+    guard args.count >= 3 else { fail("lens <in> <outdir>") }
+    let source = try engine.load(URL(fileURLWithPath: args[1]))
+    let masker = Masker(engine: engine)
+    let set = MaskSet()
+    timed("depth") { masker.compute([], depth: true, source: source.image, into: set) }
+    let looks: [(String, [Step])] = [
+        ("lamp", [Step(kind: .lamp, params: ["x": 25, "y": 55, "height": 35, "intensity": 70, "warmth": 60, "ambient": -50])]),
+        ("lampdefault", [Step(kind: .lamp)]),
+        ("lamplow", [Step(kind: .lamp, params: ["x": 80, "y": 70, "height": 10, "intensity": 90, "warmth": -40, "ambient": -70, "radius": 70])]),
+        ("glow", [Step(kind: .halation, params: ["amount": 70]), Step(kind: .bloom, params: ["amount": 50])]),
+        ("streaks", [Step(kind: .streaks, params: ["amount": 80, "length": 70]), Step(kind: .fringe, params: ["amount": 100])])
+    ]
+    for (label, steps) in looks {
+        let recipe = Recipe(steps: steps)
+        for round in 1...2 {
+            var varied = recipe
+            varied.steps[0].params["x"] = 25 + Double(round)
+            let preview = engine.scaled(engine.render(source.image, recipe: varied, masks: set), maxEdge: 2880)
+            timed("\(label) preview #\(round)") { _ = engine.context.createCGImage(preview, from: preview.extent) }
+        }
+        let image = engine.scaled(engine.render(source.image, recipe: recipe, masks: set), maxEdge: 900)
+        try engine.export(image, to: URL(fileURLWithPath: args[2]).appendingPathComponent("lens-\(label).jpg"), properties: [:])
+    }
+
 default:
     fail("unknown command \(command)")
 }

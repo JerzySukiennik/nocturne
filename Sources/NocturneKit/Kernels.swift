@@ -102,6 +102,59 @@ enum KernelSource {
         return float4(mix(c, o, amount), s.a);
     }
 
+    [[stitchable]] float4 nocHigh(coreimage::sample_t s, float threshold) {
+        float3 c = max(s.rgb, 0.0);
+        float w = smoothstep(threshold, threshold + 0.35, nocLuma(c));
+        return float4(min(c, 4.0) * w, 1.0);
+    }
+
+    [[stitchable]] float4 nocGlow(coreimage::sample_t s, coreimage::sample_t g, float4 tint, float amount) {
+        return float4(max(s.rgb, 0.0) + max(g.rgb, 0.0) * tint.rgb * amount, s.a);
+    }
+
+    [[stitchable]] float4 nocFringe(coreimage::sample_t s, coreimage::sample_t r, coreimage::sample_t b) {
+        return float4(r.r, s.g, b.b, s.a);
+    }
+
+    [[stitchable]] float4 nocFocus(coreimage::sample_t d, float focus, float range) {
+        float m = smoothstep(range, range + 0.3, abs(d.r - focus));
+        return float4(m, m, m, 1.0);
+    }
+
+    [[stitchable]] float4 nocRelight(coreimage::sample_t s, coreimage::sample_t light, float ambient) {
+        float3 c = max(s.rgb, 0.0);
+        return float4(c * (exp2(ambient) + max(light.rgb, 0.0)), s.a);
+    }
+
+    [[stitchable]] float4 nocLamp(coreimage::sampler depth, float2 light, float lz, float relief, float radius, float4 color, float intensity, float shadow, coreimage::destination dest) {
+        float2 p = dest.coord();
+        const float e = 1.5;
+        float d0 = depth.sample(depth.transform(p)).r;
+        float h = d0 * relief;
+        float hl = depth.sample(depth.transform(p - float2(e, 0.0))).r * relief;
+        float hr = depth.sample(depth.transform(p + float2(e, 0.0))).r * relief;
+        float hd = depth.sample(depth.transform(p - float2(0.0, e))).r * relief;
+        float hu = depth.sample(depth.transform(p + float2(0.0, e))).r * relief;
+        float3 n = normalize(float3(hl - hr, hd - hu, 2.0 * e));
+        float3 pos = float3(p, h);
+        float3 v = float3(light, lz) - pos;
+        float dist = length(v);
+        float3 ld = v / max(dist, 0.001);
+        float diffuse = clamp((dot(n, ld) + 0.25) / 1.25, 0.0, 1.0);
+        float atten = 1.0 / (1.0 + (dist * dist) / (radius * radius));
+        float occ = 0.0;
+        float jitter = fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
+        for (int i = 0; i < 28; i++) {
+            float t = (float(i) + 0.3 + jitter) / 29.0;
+            float3 q = pos + v * t;
+            float hq = depth.sample(depth.transform(q.xy)).r * relief;
+            occ = max(occ, clamp((hq - q.z) / (0.10 * relief), 0.0, 1.0) * (1.0 - t * 0.6));
+        }
+        float reach = smoothstep(0.004, 0.02, d0) * mix(0.2, 1.0, smoothstep(0.02, 0.35, d0));
+        float lit = intensity * diffuse * atten * reach * (1.0 - occ * shadow);
+        return float4(color.rgb * lit, 1.0);
+    }
+
     [[stitchable]] float4 nocMatch(coreimage::sample_t s, float4 luma, float4 ss, float4 st, float4 ms, float4 mt, float4 hs, float4 ht, float amount) {
         const float3 wgt = float3(0.2290, 0.6917, 0.0793);
         float3 c = max(s.rgb, 0.0);
@@ -151,6 +204,12 @@ final class Kernels {
     let grain: CIColorKernel
     let match: CIColorKernel
     let splash: CIColorKernel
+    let high: CIColorKernel
+    let glow: CIColorKernel
+    let fringe: CIColorKernel
+    let focus: CIColorKernel
+    let relight: CIColorKernel
+    let lamp: CIKernel
     let step: CIColorKernel
 
     init() throws {
@@ -169,6 +228,13 @@ final class Kernels {
         grain = try pick("nocGrain")
         match = try pick("nocMatch")
         splash = try pick("nocSplash")
+        high = try pick("nocHigh")
+        glow = try pick("nocGlow")
+        fringe = try pick("nocFringe")
+        focus = try pick("nocFocus")
+        relight = try pick("nocRelight")
+        guard let lampKernel = all.first(where: { $0.name == "nocLamp" }) else { throw EngineError.kernel("nocLamp") }
+        lamp = lampKernel
         step = try pick("nocStep")
     }
 }

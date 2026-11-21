@@ -2,11 +2,13 @@
 
 A personal, AI-first photo editor for macOS. Native Swift, Core Image and Metal, built for an Intel MacBook Pro and a Nikon D80.
 
-## What works (0.2)
+## What works (0.3)
 
 - Library on two plain folders: `~/Pictures/Nocturne/To Process` and `~/Pictures/Nocturne/Processed`. Drop photos into the folder or onto the window and they appear on their own.
 - RAW (through Apple's RAW engine) and regular formats, decoded into a linear Display P3 working space.
-- Editor where the photo fills the window. Step kinds: Light, Color, Grade, Color Splash, Vignette, Mist, Grain, Match.
+- Editor where the photo fills the window. Tone steps: Light, Color, Grade, Color Splash, Match.
+- Light Stage: Lamp steps are virtual lights placed by clicking or dragging on the photo. A depth map gives every pixel a height, normals come from that relief, and shadows are ray-marched through it. Power, reach, height, warmth, shadow strength and scene dimming are sliders; click the Lamp tool again for a second lamp.
+- Lens Lab: Mist, Halation, Bloom, Lens Blur (depth based, click the photo to pick what stays sharp), anamorphic Streaks, Fringe (chromatic aberration), Vignette, Grain.
 - Masks on any step: Subject, Person, Background (Apple Vision) and Sky, Near, Far (Depth Anything V2 Small running locally on the CPU). Hover a mask chip to see it.
 - Describe the look: type a sentence and Gemini (free tier) proposes named recipe steps, with masks where you name a region ("darker sky", "black and white, only the sun in color"). Every step can be switched off, tuned or deleted.
 - Match a reference: copy any image or screenshot and press Cmd+V in the editor. The look (tone and color per shadow, midtone and highlight zone) is measured locally and applied as one step with an Amount slider.
@@ -51,4 +53,4 @@ The Gemini key is read from `~/Library/Application Support/Nocturne/.env` (`GEMI
 
 ## Planned
 
-Stacking (stars, Moon, star trails, focus stacking, long exposure from a series) with a Nikon D80 field guide and tethered shooting, virtual 3D lighting, lens effects, cleanup and denoise.
+Stacking (stars, Moon, star trails, focus stacking, long exposure from a series) with a Nikon D80 field guide and tethered shooting, cleanup and denoise, crop and curves.

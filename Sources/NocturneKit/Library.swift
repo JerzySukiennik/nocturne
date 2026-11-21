@@ -307,9 +307,7 @@ public final class ThumbnailStore: @unchecked Sendable {
         let recipe = photo.shelf == .toProcess ? library.loadRecipe(for: photo) : Recipe()
         if recipe.hasEffect, let source = try? engine.load(photo.url) {
             let masks = MaskSet()
-            if !recipe.maskKinds.isEmpty {
-                masker.compute(recipe.maskKinds, source: source.image, into: masks)
-            }
+            masker.prepare(recipe, source: source.image, into: masks)
             return engine.cgImage(engine.render(source.image, recipe: recipe, masks: masks), maxEdge: ThumbnailStore.edge)
         }
         guard let src = CGImageSourceCreateWithURL(photo.url as CFURL, nil) else { return nil }

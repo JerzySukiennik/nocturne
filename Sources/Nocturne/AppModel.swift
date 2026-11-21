@@ -65,6 +65,7 @@ final class AppModel: ObservableObject {
     private var source: SourceImage?
     private var masks = MaskSet()
     private var maskFailed: Set<MaskKind> = []
+    private var depthFailed = false
     private var maskPreview: MaskKind?
     private var previewRecipe: Recipe?
     private var copiedLook: Recipe?
@@ -219,6 +220,7 @@ final class AppModel: ObservableObject {
         source = nil
         masks = MaskSet()
         maskFailed = []
+        depthFailed = false
         maskPreview = nil
         previewRecipe = nil
         maskBusy = false
@@ -268,9 +270,7 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated private static func finalImage(engine: Engine, masker: Masker, source: SourceImage, recipe: Recipe, masks: MaskSet) -> CIImage {
-        if !recipe.maskKinds.isEmpty {
-            masker.compute(recipe.maskKinds, source: source.image, into: masks)
-        }
+        masker.prepare(recipe, source: source.image, into: masks)
         return engine.render(source.image, recipe: recipe, masks: masks)
     }
 
@@ -312,32 +312,76 @@ final class AppModel: ObservableObject {
                     kCIInputBackgroundImageKey: image, kCIInputMaskImageKey: mask
                 ])
             }
+            if previewRecipe == nil, let id = selectedStep, let step = recipe.steps.first(where: { $0.id == id }), step.kind == .lamp, step.on {
+                let e = image.extent
+                let center = CGPoint(x: step.value("x") / 100 * e.width, y: (1 - step.value("y") / 100) * e.height)
+                image = AppModel.marker(at: center, radius: max(e.width, e.height) * 0.011, extent: e).composited(over: image)
+            }
             display = image
         }
         renderToken += 1
         ensureMasks()
     }
 
+    private static func marker(at center: CGPoint, radius: CGFloat, extent: CGRect) -> CIImage {
+        func ring(_ inner: CGFloat, _ outer: CGFloat, _ color: CIColor) -> CIImage {
+            CIFilter(name: "CIRadialGradient", parameters: [
+                "inputCenter": CIVector(cgPoint: center), "inputRadius0": inner, "inputRadius1": outer,
+                "inputColor0": color, "inputColor1": CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+            ])?.outputImage?.cropped(to: extent) ?? CIImage.empty()
+        }
+        let halo = ring(radius * 1.0, radius * 1.7, CIColor(red: 0, green: 0, blue: 0, alpha: 0.55))
+        let dot = ring(radius * 0.6, radius * 0.95, CIColor(red: 1.0, green: 0.93, blue: 0.7, alpha: 1))
+        return dot.composited(over: halo)
+    }
+
+    func canvasPoint(_ p: CGPoint, phase: Int) -> Bool {
+        guard !showOriginal, let id = selectedStep, let i = recipe.steps.firstIndex(where: { $0.id == id }) else { return false }
+        let x = min(max(Double(p.x), 0), 1)
+        let yTop = min(max(1 - Double(p.y), 0), 1)
+        switch recipe.steps[i].kind {
+        case .lamp:
+            if phase == 0 { beginEdit() }
+            recipe.steps[i].params["x"] = x * 100
+            recipe.steps[i].params["y"] = yTop * 100
+            if phase == 2 { endEdit() }
+            refresh()
+            return true
+        case .bokeh:
+            guard let d = masks.depthValue(x: x, yFromTop: yTop) else { return true }
+            if phase == 0 { beginEdit() }
+            recipe.steps[i].params["focus"] = d * 100
+            if phase == 2 { endEdit() }
+            refresh()
+            return true
+        default:
+            return false
+        }
+    }
+
     private func ensureMasks() {
         guard let source, let photo = current, !maskBusy else { return }
-        var needed = (previewRecipe ?? recipe).maskKinds
+        let active = previewRecipe ?? recipe
+        var needed = active.maskKinds
         if let kind = maskPreview { needed.insert(kind) }
         needed.subtract(masks.ready)
         needed.subtract(maskFailed)
-        guard !needed.isEmpty else { return }
+        let wantDepth = active.needsDepth && masks.depth == nil && !depthFailed
+        guard !needed.isEmpty || wantDepth else { return }
         maskBusy = true
         let masker = masker
         let masks = masks
         let wanted = needed
         Task.detached(priority: .userInitiated) {
-            masker.compute(wanted, source: source.image, into: masks)
+            masker.compute(wanted, depth: wantDepth, source: source.image, into: masks)
             await MainActor.run {
                 guard self.current?.id == photo.id, self.masks === masks else { return }
                 self.maskBusy = false
                 let missing = wanted.subtracting(masks.ready)
-                if !missing.isEmpty {
+                if wantDepth && masks.depth == nil { self.depthFailed = true }
+                if !missing.isEmpty || self.depthFailed {
                     self.maskFailed.formUnion(missing)
-                    self.say("The depth model is missing, so sky, near and far masks are off.", error: true)
+                    self.say("The depth model is missing, so depth masks, lamps and lens blur are off.", error: true)
                 }
                 self.refresh()
             }
@@ -396,11 +440,17 @@ final class AppModel: ObservableObject {
     }
 
     func focusTool(_ kind: StepKind) {
-        if let existing = recipe.steps.last(where: { $0.kind == kind && !$0.ai && $0.mask == nil }) {
+        let addAnother = kind == .lamp && recipe.steps.contains { $0.id == selectedStep && $0.kind == .lamp }
+        if !addAnother, let existing = recipe.steps.last(where: { $0.kind == kind && !$0.ai && $0.mask == nil }) {
             selectedStep = selectedStep == existing.id ? nil : existing.id
             return
         }
-        let step = Step(kind: kind)
+        var step = Step(kind: kind)
+        if addAnother {
+            step.name = "Lamp \(recipe.steps.filter { $0.kind == .lamp }.count + 1)"
+            step.params["x"] = 70
+            step.params["warmth"] = -30
+        }
         mutate { r in
             let firstAI = r.steps.firstIndex { $0.ai } ?? r.steps.count
             r.steps.insert(step, at: firstAI)
@@ -603,7 +653,7 @@ final class AppModel: ObservableObject {
                 var recipe = look.fresh()
                 if needsSource, let source = try? engine.load(photo.url) {
                     let masks = MaskSet()
-                    if !look.maskKinds.isEmpty { masker.compute(look.maskKinds, source: source.image, into: masks) }
+                    masker.prepare(look, source: source.image, into: masks)
                     recipe = engine.adapted(look, to: source.image, masks: masks)
                 }
                 lib.saveRecipe(recipe, for: photo)
