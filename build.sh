@@ -1,5 +1,5 @@
 #!/bin/bash
-# Nocturne: builds, bundles and signs Nocturne.app. Usage: ./build.sh [install]
+# Nocturne: builds, bundles and signs Nocturne.app. Usage: ./build.sh [install|dev]. dev makes a separate test copy that never touches /Applications.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
@@ -12,7 +12,13 @@ if [ ! -f "$ICONS/AppIcon.icns" ]; then
   swift Niepotrzebne/tools/make-icon.swift "$ICONS/AppIcon.iconset"
   iconutil -c icns "$ICONS/AppIcon.iconset" -o "$ICONS/AppIcon.icns"
 fi
-OUT="Niepotrzebne/Nocturne.app"
+NAME="Nocturne"
+BUNDLE="fun.gzowo.nocturne"
+if [ "${1:-}" = "dev" ]; then
+  NAME="Nocturne Dev"
+  BUNDLE="fun.gzowo.nocturne.dev"
+fi
+OUT="Niepotrzebne/$NAME.app"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp "$BIN/Nocturne" "$OUT/Contents/MacOS/Nocturne.new"
 mv -f "$OUT/Contents/MacOS/Nocturne.new" "$OUT/Contents/MacOS/Nocturne"
@@ -23,9 +29,9 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>fun.gzowo.nocturne</string>
-<key>CFBundleName</key><string>Nocturne</string>
-<key>CFBundleDisplayName</key><string>Nocturne</string>
+<key>CFBundleIdentifier</key><string>$BUNDLE</string>
+<key>CFBundleName</key><string>$NAME</string>
+<key>CFBundleDisplayName</key><string>$NAME</string>
 <key>CFBundleExecutable</key><string>Nocturne</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>$VERSION</string>
@@ -41,6 +47,11 @@ cat > "$OUT/Contents/Info.plist" <<PLIST
 PLIST
 IDENTITY="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)"
 codesign --force --sign "${IDENTITY:--}" "$OUT" 2>/dev/null
+MODELS="$HOME/Library/Application Support/Nocturne/Models"
+if [ ! -d "$MODELS/DepthAnythingV2SmallF16.mlmodelc" ] && [ -d "Niepotrzebne/models/DepthAnythingV2SmallF16.mlmodelc" ]; then
+  mkdir -p "$MODELS"
+  cp -R "Niepotrzebne/models/DepthAnythingV2SmallF16.mlmodelc" "$MODELS/"
+fi
 if [ "${1:-}" = "install" ]; then
   rm -rf "/Applications/Nocturne.app"
   cp -R "$OUT" "/Applications/Nocturne.app"

@@ -188,7 +188,8 @@ private struct Header: View {
 
     private var subtitle: String {
         let n = model.photos.count
-        return "\(n) photo\(n == 1 ? "" : "s") · newest first"
+        let picked = model.selected.count
+        return "\(n) photo\(n == 1 ? "" : "s") · newest first" + (picked > 1 ? " · \(picked) selected" : "")
     }
 }
 
@@ -216,7 +217,9 @@ private struct Cell: View {
     let photo: Photo
 
     var body: some View {
-        let selected: Bool = model.selection == photo.id
+        let selected: Bool = model.selected.contains(photo.id)
+        let many: Bool = selected && model.selected.count > 1
+        let count: Int = model.selected.count
         VStack(alignment: .leading, spacing: 6) {
             Thumb(photo: photo)
                 .overlay {
@@ -246,12 +249,37 @@ private struct Cell: View {
         }
         .contentShape(Rectangle())
         .gesture(TapGesture(count: 2).onEnded { model.open(photo) })
-        .simultaneousGesture(TapGesture().onEnded { model.selection = photo.id })
+        .simultaneousGesture(TapGesture().onEnded { model.click(photo) })
         .contextMenu {
             Button("Open") { model.open(photo) }
             Button("Show in Finder") { model.showInFinder(photo) }
+            if photo.shelf == .toProcess {
+                Divider()
+                Button("Copy Look") {
+                    model.focus(photo, keepSelection: false)
+                    model.copyLook()
+                }
+                Button(many ? "Paste Look to \(count) Photos" : "Paste Look") {
+                    model.focus(photo, keepSelection: true)
+                    model.pasteLook()
+                }
+                .disabled(!model.hasCopiedLook)
+                Menu(many ? "Apply Preset to \(count) Photos" : "Apply Preset") {
+                    ForEach(model.presets) { preset in
+                        Button(preset.name) {
+                            model.focus(photo, keepSelection: true)
+                            model.applyToSelection(preset.recipe, label: "Applying \(preset.name)")
+                        }
+                    }
+                }
+                .disabled(model.presets.isEmpty)
+                Button(many ? "Export \(count) Photos" : "Export") {
+                    model.focus(photo, keepSelection: true)
+                    model.exportSelection()
+                }
+            }
             Divider()
-            Button("Move to Trash") { model.trash(photo) }
+            Button(many ? "Move \(count) to Trash" : "Move to Trash") { model.trashSelection(including: photo) }
         }
     }
 }
@@ -285,13 +313,16 @@ private struct StatusBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if let notice = model.notice {
+            if let batch = model.batch {
+                ProgressView().controlSize(.mini)
+                Text("\(batch.label) \(batch.done) / \(batch.total)").foregroundStyle(Theme.accent)
+            } else if let notice = model.notice {
                 Text(notice.text).foregroundStyle(notice.isError ? Theme.error : Theme.accent)
             } else {
                 Text(summary)
             }
             Spacer()
-            Text("Return opens · drop photos to add")
+            Text("Return opens · Cmd-click selects more · right-click for batch")
         }
         .font(.system(size: 12))
         .foregroundStyle(Theme.dim)

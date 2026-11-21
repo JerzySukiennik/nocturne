@@ -30,17 +30,40 @@ public struct ParamSpec: Sendable, Identifiable {
     }
 }
 
+public enum MaskKind: String, Codable, CaseIterable, Sendable {
+    case subject, person, background, sky, near, far
+
+    public var title: String {
+        switch self {
+        case .subject: return "Subject"
+        case .person: return "Person"
+        case .background: return "Background"
+        case .sky: return "Sky"
+        case .near: return "Near"
+        case .far: return "Far"
+        }
+    }
+
+    public var needsDepth: Bool {
+        self == .sky || self == .near || self == .far
+    }
+}
+
 public enum StepKind: String, Codable, CaseIterable, Sendable {
-    case light, color, grade, vignette, mist, grain
+    case light, color, grade, splash, vignette, mist, grain, match
+
+    public static let tools: [StepKind] = [.light, .color, .grade, .splash, .vignette, .mist, .grain]
 
     public var title: String {
         switch self {
         case .light: return "Light"
         case .color: return "Color"
         case .grade: return "Grade"
+        case .splash: return "Color Splash"
         case .vignette: return "Vignette"
         case .mist: return "Mist"
         case .grain: return "Grain"
+        case .match: return "Match"
         }
     }
 
@@ -49,9 +72,11 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
         case .light: return "sun.max"
         case .color: return "drop"
         case .grade: return "circle.lefthalf.filled"
+        case .splash: return "drop.halffull"
         case .vignette: return "circle.dashed"
         case .mist: return "cloud.fog"
         case .grain: return "circle.dotted"
+        case .match: return "photo.on.rectangle"
         }
     }
 
@@ -81,6 +106,12 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
                 ParamSpec("highlightAmount", "Lights", 0, 100),
                 ParamSpec("balance", "Balance", -100, 100)
             ]
+        case .splash:
+            return [
+                ParamSpec("amount", "Amount", 0, 100),
+                ParamSpec("hue", "Keep hue", 0, 360, 30),
+                ParamSpec("range", "Range", 5, 180, 40)
+            ]
         case .vignette:
             return [
                 ParamSpec("amount", "Amount", -100, 100),
@@ -96,6 +127,10 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
                 ParamSpec("amount", "Amount", 0, 100),
                 ParamSpec("size", "Size", 0, 100, 30)
             ]
+        case .match:
+            return [
+                ParamSpec("amount", "Amount", 0, 100, 100)
+            ]
         }
     }
 
@@ -104,26 +139,32 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
         case .light: return ["exposure", "contrast", "highlights", "shadows", "whites", "blacks"]
         case .color: return ["temperature", "tint", "vibrance", "saturation"]
         case .grade: return ["shadowAmount", "highlightAmount"]
-        case .vignette, .mist, .grain: return ["amount"]
+        case .splash, .vignette, .mist, .grain, .match: return ["amount"]
         }
     }
 }
 
 public struct Step: Codable, Identifiable, Equatable, Sendable {
+    public static let matchCount = 28
+
     public var id: UUID
     public var kind: StepKind
     public var name: String
     public var on: Bool
     public var ai: Bool
     public var params: [String: Double]
+    public var mask: MaskKind?
+    public var data: [Double]?
 
-    public init(kind: StepKind, name: String? = nil, ai: Bool = false, params: [String: Double] = [:]) {
+    public init(kind: StepKind, name: String? = nil, ai: Bool = false, params: [String: Double] = [:], mask: MaskKind? = nil, data: [Double]? = nil) {
         self.id = UUID()
         self.kind = kind
         self.name = name ?? kind.title
         self.on = true
         self.ai = ai
         self.params = [:]
+        self.mask = mask
+        self.data = data
         for spec in kind.params {
             if let v = params[spec.key], v.isFinite {
                 self.params[spec.key] = spec.clamp(v)
@@ -137,7 +178,14 @@ public struct Step: Codable, Identifiable, Equatable, Sendable {
     }
 
     public var isNeutral: Bool {
-        kind.drivers.allSatisfy { abs(value($0)) < 0.0001 }
+        if kind == .match && (data?.count ?? 0) != Step.matchCount { return true }
+        return kind.drivers.allSatisfy { abs(value($0)) < 0.0001 }
+    }
+
+    public func fresh() -> Step {
+        var copy = self
+        copy.id = UUID()
+        return copy
     }
 }
 
@@ -156,5 +204,13 @@ public struct Recipe: Codable, Equatable, Sendable {
 
     public var manual: Recipe {
         Recipe(steps: steps.filter { !$0.ai })
+    }
+
+    public var maskKinds: Set<MaskKind> {
+        Set(steps.filter { $0.on && !$0.isNeutral }.compactMap { $0.mask })
+    }
+
+    public func fresh() -> Recipe {
+        Recipe(steps: steps.map { $0.fresh() })
     }
 }

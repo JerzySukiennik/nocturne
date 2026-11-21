@@ -81,6 +81,56 @@ enum KernelSource {
         return float4(o, s.a);
     }
 
+    [[stitchable]] float4 nocSplash(coreimage::sample_t s, float hue, float range, float amount) {
+        float3 c = max(s.rgb, 0.0);
+        float3 v = pow(min(c, 4.0), float3(1.0 / 2.2));
+        float mx = max(v.r, max(v.g, v.b));
+        float mn = min(v.r, min(v.g, v.b));
+        float d = mx - mn;
+        float sat = mx > 0.0001 ? d / mx : 0.0;
+        float h = 0.0;
+        if (d > 0.00001) {
+            if (mx == v.r) { h = (v.g - v.b) / d; }
+            else if (mx == v.g) { h = 2.0 + (v.b - v.r) / d; }
+            else { h = 4.0 + (v.r - v.g) / d; }
+            h = fract(h / 6.0);
+        }
+        float dist = abs(h - hue);
+        dist = min(dist, 1.0 - dist);
+        float keep = (1.0 - smoothstep(range * 0.5, range * 0.5 + 0.045, dist)) * smoothstep(0.06, 0.2, sat);
+        float3 o = mix(float3(nocLuma(c)), c, keep);
+        return float4(mix(c, o, amount), s.a);
+    }
+
+    [[stitchable]] float4 nocMatch(coreimage::sample_t s, float4 luma, float4 ss, float4 st, float4 ms, float4 mt, float4 hs, float4 ht, float amount) {
+        const float3 wgt = float3(0.2290, 0.6917, 0.0793);
+        float3 c = max(s.rgb, 0.0);
+        float3 v = pow(min(c, 4.0), float3(1.0 / 2.2));
+        float y = dot(v, wgt);
+        float2 ch = float2(v.b - y, v.r - y);
+        float yc = clamp(y, 0.0, 1.0);
+        float ws = 1.0 - smoothstep(0.15, 0.45, yc);
+        float wh = smoothstep(0.55, 0.85, yc);
+        float wm = 1.0 - ws - wh;
+        float2 ks = mix(float2(1.0), clamp(st.zw / max(ss.zw, 0.004), 0.6, 1.8), 0.7);
+        float2 km = mix(float2(1.0), clamp(mt.zw / max(ms.zw, 0.004), 0.6, 1.8), 0.7);
+        float2 kh = mix(float2(1.0), clamp(ht.zw / max(hs.zw, 0.004), 0.6, 1.8), 0.7);
+        float2 cc = ((ch - ss.xy) * ks + st.xy) * ws + ((ch - ms.xy) * km + mt.xy) * wm + ((ch - hs.xy) * kh + ht.xy) * wh;
+        float ky = clamp(luma.w / max(luma.y, 0.02), 0.7, 1.4);
+        float y2 = mix(y, (y - luma.x) * ky + luma.z, 0.6);
+        float r = y2 + cc.y;
+        float b = y2 + cc.x;
+        float g = (y2 - wgt.r * r - wgt.b * b) / wgt.g;
+        float3 o = pow(max(float3(r, g, b), 0.0), float3(2.2));
+        return float4(mix(c, o, amount), s.a);
+    }
+
+    [[stitchable]] float4 nocStep(coreimage::sample_t d, float lo, float hi, float invert) {
+        float m = smoothstep(lo, hi, d.r);
+        m = mix(m, 1.0 - m, invert);
+        return float4(m, m, m, 1.0);
+    }
+
     [[stitchable]] float4 nocGrain(coreimage::sample_t s, coreimage::sample_t n, float amount) {
         float3 c = max(s.rgb, 0.0);
         float l = pow(clamp(nocLuma(c), 0.0, 1.0), 1.0 / 2.2);
@@ -99,6 +149,9 @@ final class Kernels {
     let vignette: CIColorKernel
     let mist: CIColorKernel
     let grain: CIColorKernel
+    let match: CIColorKernel
+    let splash: CIColorKernel
+    let step: CIColorKernel
 
     init() throws {
         let all = try CIKernel.kernels(withMetalString: KernelSource.metal)
@@ -114,5 +167,8 @@ final class Kernels {
         vignette = try pick("nocVignette")
         mist = try pick("nocMist")
         grain = try pick("nocGrain")
+        match = try pick("nocMatch")
+        splash = try pick("nocSplash")
+        step = try pick("nocStep")
     }
 }

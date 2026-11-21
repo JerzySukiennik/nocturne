@@ -1,8 +1,12 @@
 Niepotrzebne/build/
 Niepotrzebne/Nocturne.app/
+Niepotrzebne/Nocturne Dev.app/
 Niepotrzebne/samples/
 Niepotrzebne/warianty/
 Niepotrzebne/icon/
+Niepotrzebne/models/
+Niepotrzebne/spike/
+Niepotrzebne/testlib/
 .DS_Store
 .env
 .build/

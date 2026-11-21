@@ -27,9 +27,31 @@ struct NocturneApp: App {
                 Button("Describe the Look") { model.focusPrompt += 1 }
                     .keyboardShortcut("k", modifiers: .command)
                     .disabled(model.current == nil)
+                Button("Presets") { model.presetsOpen.toggle() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                    .disabled(model.current == nil)
                 Button("Export…") { model.beginExport() }
                     .keyboardShortcut("e", modifiers: .command)
                     .disabled(model.current == nil)
+                Divider()
+                Button("Copy Look") { model.copyLook() }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                Button("Paste Look") { model.pasteLook() }
+                    .keyboardShortcut("v", modifiers: [.command, .shift])
+                    .disabled(!model.hasCopiedLook)
+                Button("Match Pasted Image") { model.pasteReference() }
+                    .disabled(model.current == nil)
+                Menu("Apply Preset") {
+                    ForEach(model.presets) { preset in
+                        Button(preset.name) { model.usePreset(preset) }
+                    }
+                }
+                .disabled(model.presets.isEmpty)
+                Divider()
+                Button("Select All Photos") { model.selectAll() }
+                    .disabled(model.current != nil)
+                Button("Export Selected Photos") { model.exportSelection() }
+                    .disabled(model.current != nil)
                 Divider()
                 Button("Back to Library") { model.closeEditor() }
                     .disabled(model.current == nil)

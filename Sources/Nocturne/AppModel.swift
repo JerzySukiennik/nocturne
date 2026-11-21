@@ -1,8 +1,9 @@
-// Nocturne: app state. Library shelves, the open photo, its recipe with undo, AI calls and export.
+// Nocturne: app state. Library shelves and selection, the open photo, its recipe with undo, masks, presets, batch work, AI calls and export.
 import AppKit
 import CoreImage
 import NocturneKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ExportDraft: Equatable {
     var name: String
@@ -17,10 +18,17 @@ struct Notice: Equatable {
     var isError: Bool
 }
 
+struct BatchProgress: Equatable {
+    var label: String
+    var done: Int
+    var total: Int
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     let engine = Engine.shared
     let library = Library()
+    let masker: Masker
     let thumbs: ThumbnailStore
     let ai = Gemini()
 
@@ -28,8 +36,10 @@ final class AppModel: ObservableObject {
     @Published var photos: [Photo] = []
     @Published var counts: [Shelf: Int] = [:]
     @Published var selection: String?
+    @Published var selected: Set<String> = []
     @Published var thumbEpoch = 0
     @Published var scanned = false
+    @Published var batch: BatchProgress?
 
     @Published var current: Photo?
     @Published var recipe = Recipe()
@@ -42,12 +52,22 @@ final class AppModel: ObservableObject {
     @Published var prompt = ""
     @Published var focusPrompt = 0
     @Published var aiBusy = false
+    @Published var maskBusy = false
     @Published var notice: Notice?
     @Published var exportDraft: ExportDraft?
+    @Published var presets: [Preset] = []
+    @Published var presetsOpen = false
+    @Published var presetName = ""
+    @Published var hasCopiedLook = false
 
     var columns = 5
     private(set) var display: CIImage?
     private var source: SourceImage?
+    private var masks = MaskSet()
+    private var maskFailed: Set<MaskKind> = []
+    private var maskPreview: MaskKind?
+    private var previewRecipe: Recipe?
+    private var copiedLook: Recipe?
     private var undoStack: [Recipe] = []
     private var redoStack: [Recipe] = []
     private var editStart: Recipe?
@@ -58,8 +78,10 @@ final class AppModel: ObservableObject {
     private var monitor: Any?
 
     init() {
-        thumbs = ThumbnailStore(engine: engine, library: library)
+        masker = Masker(engine: engine)
+        thumbs = ThumbnailStore(engine: engine, library: library, masker: masker)
         try? library.prepare()
+        presets = library.presets()
         reload()
         library.watch { [weak self] in
             Task { @MainActor in self?.reload() }
@@ -84,9 +106,12 @@ final class AppModel: ObservableObject {
                 self.photos = list
                 self.counts = result
                 self.scanned = true
-                if self.selection == nil || !list.contains(where: { $0.id == self.selection }) {
+                let ids = Set(list.map { $0.id })
+                if self.selection == nil || !ids.contains(self.selection ?? "") {
                     self.selection = list.first?.id
                 }
+                self.selected = self.selected.intersection(ids)
+                if self.selected.isEmpty, let primary = self.selection { self.selected = [primary] }
             }
         }
     }
@@ -96,6 +121,7 @@ final class AppModel: ObservableObject {
         shelf = next
         photos = []
         selection = nil
+        selected = []
         reload()
     }
 
@@ -112,13 +138,48 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func trash(_ photo: Photo) {
-        do {
-            try library.trash(photo)
-            reload()
-        } catch {
-            say("Could not move the photo to the Trash.", error: true)
+    var targets: [Photo] {
+        photos.filter { selected.contains($0.id) }
+    }
+
+    func click(_ photo: Photo) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.command) {
+            if selected.contains(photo.id), selected.count > 1 {
+                selected.remove(photo.id)
+                if selection == photo.id { selection = selected.first }
+            } else {
+                selected.insert(photo.id)
+                selection = photo.id
+            }
+        } else if flags.contains(.shift), let anchor = photos.firstIndex(where: { $0.id == selection }),
+                  let end = photos.firstIndex(where: { $0.id == photo.id }) {
+            selected = Set(photos[min(anchor, end)...max(anchor, end)].map { $0.id })
+        } else {
+            selection = photo.id
+            selected = [photo.id]
         }
+    }
+
+    func focus(_ photo: Photo, keepSelection: Bool) {
+        if keepSelection && selected.contains(photo.id) { return }
+        selection = photo.id
+        selected = [photo.id]
+    }
+
+    func selectAll() {
+        selected = Set(photos.map { $0.id })
+        if selection == nil { selection = photos.first?.id }
+    }
+
+    func trashSelection(including photo: Photo) {
+        let list = selected.contains(photo.id) ? targets : [photo]
+        var failed = 0
+        for item in list {
+            if (try? library.trash(item)) == nil { failed += 1 }
+        }
+        if failed > 0 { say("Could not move \(failed) photo\(failed == 1 ? "" : "s") to the Trash.", error: true) }
+        reload()
     }
 
     func showInFinder(_ photo: Photo?) {
@@ -134,6 +195,7 @@ final class AppModel: ObservableObject {
         let index = photos.firstIndex { $0.id == selection } ?? 0
         let next = min(max(index + delta, 0), photos.count - 1)
         selection = photos[next].id
+        selected = [photos[next].id]
     }
 
     func openSelected() {
@@ -144,6 +206,7 @@ final class AppModel: ObservableObject {
         leavePhoto()
         current = photo
         selection = photo.id
+        selected = [photo.id]
         recipe = library.loadRecipe(for: photo)
         undoStack = []
         redoStack = []
@@ -151,8 +214,14 @@ final class AppModel: ObservableObject {
         selectedStep = nil
         showOriginal = false
         exportDraft = nil
+        presetsOpen = false
         prompt = ""
         source = nil
+        masks = MaskSet()
+        maskFailed = []
+        maskPreview = nil
+        previewRecipe = nil
+        maskBusy = false
         if let thumb = thumbs.cached(photo) {
             display = CIImage(cgImage: thumb)
         } else {
@@ -184,15 +253,25 @@ final class AppModel: ObservableObject {
         let changed = dirty
         flushSave()
         guard changed, photo.shelf == .toProcess, let source else { return }
-        let image = engine.render(source.image, recipe: recipe)
         let engine = engine
+        let masker = masker
         let thumbs = thumbs
+        let recipe = recipe
+        let masks = masks
         Task.detached(priority: .utility) {
+            let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: masks)
             if let cg = engine.cgImage(image, maxEdge: ThumbnailStore.edge) {
                 thumbs.store(cg, for: photo)
                 await MainActor.run { self.thumbEpoch += 1 }
             }
         }
+    }
+
+    nonisolated private static func finalImage(engine: Engine, masker: Masker, source: SourceImage, recipe: Recipe, masks: MaskSet) -> CIImage {
+        if !recipe.maskKinds.isEmpty {
+            masker.compute(recipe.maskKinds, source: source.image, into: masks)
+        }
+        return engine.render(source.image, recipe: recipe, masks: masks)
     }
 
     func closeEditor() {
@@ -202,6 +281,9 @@ final class AppModel: ObservableObject {
         source = nil
         display = nil
         exportDraft = nil
+        presetsOpen = false
+        previewRecipe = nil
+        maskPreview = nil
         loading = false
         reload()
     }
@@ -220,8 +302,58 @@ final class AppModel: ObservableObject {
 
     func refresh() {
         guard let source else { return }
-        display = showOriginal ? source.image : engine.render(source.image, recipe: recipe)
+        if showOriginal {
+            display = source.image
+        } else {
+            var image = engine.render(source.image, recipe: previewRecipe ?? recipe, masks: masks)
+            if let kind = maskPreview, let mask = masks.image(kind) {
+                let tint = CIImage(color: CIColor(red: 0.95, green: 0.85, blue: 0.54, alpha: 0.62)).cropped(to: image.extent)
+                image = tint.composited(over: image).applyingFilter("CIBlendWithRedMask", parameters: [
+                    kCIInputBackgroundImageKey: image, kCIInputMaskImageKey: mask
+                ])
+            }
+            display = image
+        }
         renderToken += 1
+        ensureMasks()
+    }
+
+    private func ensureMasks() {
+        guard let source, let photo = current, !maskBusy else { return }
+        var needed = (previewRecipe ?? recipe).maskKinds
+        if let kind = maskPreview { needed.insert(kind) }
+        needed.subtract(masks.ready)
+        needed.subtract(maskFailed)
+        guard !needed.isEmpty else { return }
+        maskBusy = true
+        let masker = masker
+        let masks = masks
+        let wanted = needed
+        Task.detached(priority: .userInitiated) {
+            masker.compute(wanted, source: source.image, into: masks)
+            await MainActor.run {
+                guard self.current?.id == photo.id, self.masks === masks else { return }
+                self.maskBusy = false
+                let missing = wanted.subtracting(masks.ready)
+                if !missing.isEmpty {
+                    self.maskFailed.formUnion(missing)
+                    self.say("The depth model is missing, so sky, near and far masks are off.", error: true)
+                }
+                self.refresh()
+            }
+        }
+    }
+
+    func previewMask(_ kind: MaskKind?) {
+        guard maskPreview != kind else { return }
+        maskPreview = kind
+        refresh()
+    }
+
+    func setMask(_ id: UUID, _ kind: MaskKind?) {
+        mutate { r in
+            if let i = r.steps.firstIndex(where: { $0.id == id }) { r.steps[i].mask = kind }
+        }
     }
 
     func beginEdit() {
@@ -264,7 +396,7 @@ final class AppModel: ObservableObject {
     }
 
     func focusTool(_ kind: StepKind) {
-        if let existing = recipe.steps.last(where: { $0.kind == kind && !$0.ai }) {
+        if let existing = recipe.steps.last(where: { $0.kind == kind && !$0.ai && $0.mask == nil }) {
             selectedStep = selectedStep == existing.id ? nil : existing.id
             return
         }
@@ -332,12 +464,14 @@ final class AppModel: ObservableObject {
         let manual = recipe.manual
         let previous = recipe.steps.filter { $0.ai }
         let engine = engine
+        let masker = masker
+        let masks = masks
         let ai = ai
-        let base = source.image
         Task {
             do {
                 let preview = await Task.detached(priority: .userInitiated) {
-                    engine.jpegData(engine.render(base, recipe: manual), maxEdge: 768, quality: 0.8)
+                    let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: manual, masks: masks)
+                    return engine.jpegData(image, maxEdge: 768, quality: 0.8)
                 }.value
                 guard let preview else { throw AIError.badAnswer }
                 let answer = try await ai.describeLook(prompt: text, preview: preview, previous: previous)
@@ -355,20 +489,188 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private var clipboardImage: CGImage? {
+        let pb = NSPasteboard.general
+        guard pb.canReadObject(forClasses: [NSImage.self], options: nil), let image = NSImage(pasteboard: pb) else { return nil }
+        return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    @discardableResult
+    func pasteReference() -> Bool {
+        guard let source, let photo = current, let cg = clipboardImage else { return false }
+        let reference = CIImage(cgImage: cg)
+        let rest = Recipe(steps: recipe.steps.filter { $0.kind != .match })
+        let engine = engine
+        let masker = masker
+        let masks = masks
+        Task {
+            let step = await Task.detached(priority: .userInitiated) { () -> Step? in
+                let now = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: rest, masks: masks)
+                guard var step = engine.matchStep(reference: reference, current: now) else { return nil }
+                step.params["amount"] = 80
+                return step
+            }.value
+            guard self.current?.id == photo.id else { return }
+            guard let step else {
+                self.say("Could not read the pasted image.", error: true)
+                return
+            }
+            self.mutate { r in
+                r.steps.removeAll { $0.kind == .match }
+                r.steps.append(step)
+            }
+            self.selectedStep = step.id
+            self.say("Matched the pasted reference. Tune it with Amount.", error: false)
+        }
+        return true
+    }
+
+    func savePreset() {
+        let name = Library.cleanName(presetName)
+        guard !name.isEmpty, recipe.hasEffect else { return }
+        do {
+            try library.savePreset(name: name, recipe: recipe)
+            presets = library.presets()
+            presetName = ""
+            say("Saved preset \(name).", error: false)
+        } catch {
+            say("Could not save the preset.", error: true)
+        }
+    }
+
+    func deletePreset(_ preset: Preset) {
+        library.deletePreset(preset.name)
+        presets = library.presets()
+    }
+
+    func previewPreset(_ preset: Preset?) {
+        guard let source else { return }
+        let next = preset.map { engine.adapted($0.recipe, to: source.image, masks: masks) }
+        if next == nil && previewRecipe == nil { return }
+        previewRecipe = next
+        refresh()
+    }
+
+    func applyPreset(_ preset: Preset) {
+        guard let source else { return }
+        let adapted = engine.adapted(preset.recipe, to: source.image, masks: masks)
+        previewRecipe = nil
+        mutate { r in r = adapted }
+        selectedStep = nil
+        presetsOpen = false
+        say("Applied \(preset.name).", error: false)
+    }
+
+    func usePreset(_ preset: Preset) {
+        if current != nil {
+            applyPreset(preset)
+        } else {
+            applyToSelection(preset.recipe, label: "Applying \(preset.name)")
+        }
+    }
+
+    func copyLook() {
+        if current != nil {
+            copiedLook = recipe
+        } else if let photo = photos.first(where: { $0.id == selection }) {
+            copiedLook = library.loadRecipe(for: photo)
+        }
+        hasCopiedLook = copiedLook?.hasEffect ?? false
+        say(hasCopiedLook ? "Look copied." : "This photo has no look to copy.", error: !hasCopiedLook)
+    }
+
+    func pasteLook() {
+        guard let look = copiedLook, look.hasEffect else { return }
+        if let source, current != nil {
+            let adapted = engine.adapted(look, to: source.image, masks: masks)
+            mutate { r in r = adapted }
+            selectedStep = nil
+            return
+        }
+        applyToSelection(look, label: "Applying look")
+    }
+
+    func applyToSelection(_ look: Recipe, label: String) {
+        let list = targets.filter { $0.shelf == .toProcess }
+        guard !list.isEmpty, batch == nil else { return }
+        batch = BatchProgress(label: label, done: 0, total: list.count)
+        let lib = library
+        let engine = engine
+        let masker = masker
+        let needsSource = look.steps.contains { $0.kind == .match }
+        Task.detached(priority: .userInitiated) {
+            for (i, photo) in list.enumerated() {
+                var recipe = look.fresh()
+                if needsSource, let source = try? engine.load(photo.url) {
+                    let masks = MaskSet()
+                    if !look.maskKinds.isEmpty { masker.compute(look.maskKinds, source: source.image, into: masks) }
+                    recipe = engine.adapted(look, to: source.image, masks: masks)
+                }
+                lib.saveRecipe(recipe, for: photo)
+                await MainActor.run { self.batch?.done = i + 1 }
+            }
+            await MainActor.run {
+                self.batch = nil
+                self.thumbEpoch += 1
+                self.reload()
+                self.say("Look applied to \(list.count) photo\(list.count == 1 ? "" : "s").", error: false)
+            }
+        }
+    }
+
+    func exportSelection() {
+        let list = targets.filter { $0.shelf == .toProcess }
+        guard !list.isEmpty, batch == nil else { return }
+        batch = BatchProgress(label: "Exporting", done: 0, total: list.count)
+        let lib = library
+        let engine = engine
+        let masker = masker
+        let ai = ai
+        Task.detached(priority: .userInitiated) {
+            var failed = 0
+            for (i, photo) in list.enumerated() {
+                do {
+                    let source = try engine.load(photo.url)
+                    let recipe = lib.loadRecipe(for: photo)
+                    let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: MaskSet())
+                    var name = photo.url.deletingPathExtension().lastPathComponent
+                    if let preview = engine.jpegData(image, maxEdge: 512, quality: 0.75), let suggestion = try? await ai.suggestName(preview: preview) {
+                        name = suggestion
+                    }
+                    _ = try lib.export(photo: photo, recipe: recipe, name: name, image: image, properties: source.properties, engine: engine)
+                } catch {
+                    failed += 1
+                }
+                await MainActor.run { self.batch?.done = i + 1 }
+            }
+            let bad = failed
+            await MainActor.run {
+                self.batch = nil
+                self.reload()
+                let ok = list.count - bad
+                self.say(bad == 0 ? "Exported \(ok) photo\(ok == 1 ? "" : "s") to Processed." : "Exported \(ok), \(bad) failed.", error: bad > 0)
+            }
+        }
+    }
+
     func beginExport() {
         guard let photo = current, let source, exportDraft == nil else { return }
+        presetsOpen = false
         let base = photo.url.deletingPathExtension().lastPathComponent
         if photo.shelf == .processed {
             exportDraft = ExportDraft(name: base, suggesting: false, touched: true, working: false, renamable: false)
             return
         }
         exportDraft = ExportDraft(name: base, suggesting: true, touched: false, working: false, renamable: true)
-        let image = engine.render(source.image, recipe: recipe)
         let engine = engine
+        let masker = masker
+        let masks = masks
+        let recipe = recipe
         let ai = ai
         Task {
             let preview = await Task.detached(priority: .userInitiated) {
-                engine.jpegData(image, maxEdge: 512, quality: 0.75)
+                let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: masks)
+                return engine.jpegData(image, maxEdge: 512, quality: 0.75)
             }.value
             var suggestion: String?
             if let preview { suggestion = try? await ai.suggestName(preview: preview) }
@@ -386,14 +688,17 @@ final class AppModel: ObservableObject {
         flushSave()
         let recipe = recipe
         let name = draft.name
-        let image = engine.render(source.image, recipe: recipe)
-        let props = source.properties
         let lib = library
         let engine = engine
+        let masker = masker
+        let masks = masks
         let index = photos.firstIndex { $0.id == photo.id }
         Task {
             let result: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
-                Result { try lib.export(photo: photo, recipe: recipe, name: name, image: image, properties: props, engine: engine) }
+                Result {
+                    let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: masks)
+                    return try lib.export(photo: photo, recipe: recipe, name: name, image: image, properties: source.properties, engine: engine)
+                }
             }.value
             switch result {
             case .success(let url):
@@ -430,20 +735,37 @@ final class AppModel: ObservableObject {
             }
             return false
         }
+        let command = e.modifierFlags.contains(.command)
+        let shift = e.modifierFlags.contains(.shift)
+        if command, !shift, e.keyCode == 9, current != nil, clipboardImage != nil {
+            pasteReference()
+            return true
+        }
         let typing = (e.window ?? NSApp.keyWindow)?.firstResponder is NSTextView
         if typing {
             if e.keyCode == 53 {
-                NSApp.keyWindow?.makeFirstResponder(nil)
+                (e.window ?? NSApp.keyWindow)?.makeFirstResponder(nil)
                 if exportDraft != nil { exportDraft = nil }
                 return true
             }
             return false
         }
-        if e.modifierFlags.contains(.command) || e.modifierFlags.contains(.control) { return false }
+        if command, !shift, e.keyCode == 0, current == nil {
+            selectAll()
+            return true
+        }
+        if command || e.modifierFlags.contains(.control) { return false }
         if current != nil {
             switch e.keyCode {
             case 53:
-                if exportDraft != nil { exportDraft = nil } else { closeEditor() }
+                if exportDraft != nil {
+                    exportDraft = nil
+                } else if presetsOpen {
+                    presetsOpen = false
+                    previewPreset(nil)
+                } else {
+                    closeEditor()
+                }
             case 123: step(-1)
             case 124: step(1)
             case 42:

@@ -52,15 +52,18 @@ public final class Gemini: @unchecked Sendable {
     }
 
     static let lookSystem = """
-    You are the grading brain of Nocturne, a photo editor. The user describes a look in any language. You see the photo as it looks now, before your steps. Answer with JSON only: {"steps":[{"kind":"...","name":"...","params":{...}}],"note":"..."}.
+    You are the grading brain of Nocturne, a photo editor. The user describes a look in any language. You see the photo as it looks now, before your steps. Answer with JSON only: {"steps":[{"kind":"...","name":"...","mask":"...","params":{...}}],"note":"..."}.
     Allowed kinds and params (numbers):
     light: exposure [-3,3] in EV, contrast, highlights, shadows, whites, blacks [-100,100]
     color: temperature [-100,100] (positive is warmer), tint [-100,100] (positive is magenta), vibrance, saturation [-100,100]
     grade: shadowHue [0,360], shadowAmount [0,100], highlightHue [0,360], highlightAmount [0,100], balance [-100,100]
+    splash: amount [0,100], hue [0,360], range [5,180] (color splash: everything outside one band of hues turns black and white; hue is the color that stays, 0 red, 30 orange, 55 yellow, 120 green, 210 blue, 300 magenta; range is how wide the band is)
     vignette: amount [-100,100] (negative darkens the edges), size [0,100]
     mist: amount [0,100], spread [0,100] (soft glowing diffusion, like a Pro-Mist filter)
     grain: amount [0,100], size [0,100]
-    Rules: 1 to 4 steps, each kind at most once, only params that change, tasteful values (most within 40). name is a short English title of 2 to 4 words. note is one short sentence in the user's language about what you did. If earlier steps of yours are listed, return the full new list that should replace them: keep what still fits and change what the user asks for.
+    mask is optional and limits a step to one region: "sky", "subject" (the main object), "person", "background" (everything except the subject), "near" (the foreground), "far" (the distance). Leave mask out to affect the whole photo. Use a mask whenever the user names a region: a darker sky is a light step with mask sky and negative exposure, a brighter person is a light step with mask person.
+    Black and white: a color step with saturation -100. Black and white with one thing left in color: when that thing is defined by its color (the sun, a sunset glow, a red car, green grass) use splash with amount 100; when it is the main subject or a person use a color step with saturation -100 and mask background.
+    Rules: 1 to 5 steps, a kind may repeat only with a different mask, only params that change, tasteful values (most within 40). name is a short English title of 2 to 4 words. note is one short sentence in the user's language about what you did. If earlier steps of yours are listed, return the full new list that should replace them: keep what still fits and change what the user asks for.
     """
 
     static let nameSystem = """
@@ -70,8 +73,10 @@ public final class Gemini: @unchecked Sendable {
     public func describeLook(prompt: String, preview: Data, previous: [Step]) async throws -> LookAnswer {
         var text = prompt
         if !previous.isEmpty {
-            let old = previous.map { step -> [String: Any] in
-                ["kind": step.kind.rawValue, "name": step.name, "params": step.params]
+            let old = previous.filter { $0.kind != .match }.map { step -> [String: Any] in
+                var item: [String: Any] = ["kind": step.kind.rawValue, "name": step.name, "params": step.params]
+                if let mask = step.mask { item["mask"] = mask.rawValue }
+                return item
             }
             if let data = try? JSONSerialization.data(withJSONObject: old), let json = String(data: data, encoding: .utf8) {
                 text += "\n\nYour earlier steps: " + json
@@ -81,14 +86,15 @@ public final class Gemini: @unchecked Sendable {
         guard let list = answer["steps"] as? [[String: Any]] else { throw AIError.badAnswer }
         var steps: [Step] = []
         for item in list {
-            guard let kindText = item["kind"] as? String, let kind = StepKind(rawValue: kindText) else { continue }
-            if steps.contains(where: { $0.kind == kind }) { continue }
+            guard let kindText = item["kind"] as? String, let kind = StepKind(rawValue: kindText), kind != .match else { continue }
+            let mask = (item["mask"] as? String).flatMap { MaskKind(rawValue: $0.lowercased()) }
+            if steps.contains(where: { $0.kind == kind && $0.mask == mask }) { continue }
             var params: [String: Double] = [:]
             for (key, value) in (item["params"] as? [String: Any]) ?? [:] {
                 if let n = value as? NSNumber { params[key] = n.doubleValue }
             }
             let name = (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let step = Step(kind: kind, name: (name?.isEmpty ?? true) ? nil : name, ai: true, params: params)
+            let step = Step(kind: kind, name: (name?.isEmpty ?? true) ? nil : name, ai: true, params: params, mask: mask)
             if !step.isNeutral { steps.append(step) }
         }
         guard !steps.isEmpty else { throw AIError.badAnswer }
@@ -120,6 +126,7 @@ public final class Gemini: @unchecked Sendable {
         var last = "Gemini did not answer."
         for model in models {
             var attempt = 0
+            var busy = 0
             while attempt < keys.count * 2 {
                 let key = keys[attempt % keys.count]
                 attempt += 1
@@ -144,7 +151,13 @@ public final class Gemini: @unchecked Sendable {
                 }
                 let message = String(data: data, encoding: .utf8) ?? ""
                 let keyProblem = [401, 403, 429].contains(status) || (status == 400 && message.range(of: "API.?key", options: [.regularExpression, .caseInsensitive]) != nil)
-                last = "Gemini answered \(status)."
+                last = status >= 500 ? "Gemini is busy right now (\(status)). Try again in a moment." : "Gemini answered \(status)."
+                if status >= 500, busy < 2 {
+                    busy += 1
+                    attempt -= 1
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    continue
+                }
                 if !keyProblem { break }
                 if attempt % keys.count == 0 && attempt < keys.count * 2 {
                     try? await Task.sleep(nanoseconds: 5_000_000_000)

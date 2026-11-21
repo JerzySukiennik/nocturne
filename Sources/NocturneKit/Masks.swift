@@ -1,0 +1,167 @@
+// Nocturne: semantic masks. Subject, person and background from Vision; sky, near and far from a local depth model.
+import Accelerate
+import CoreImage
+import CoreML
+import Foundation
+import Vision
+
+public final class MaskSet: @unchecked Sendable {
+    private var images: [MaskKind: CIImage] = [:]
+    private let lock = NSLock()
+
+    public init() {}
+
+    public func image(_ kind: MaskKind) -> CIImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return images[kind]
+    }
+
+    public func set(_ image: CIImage, for kind: MaskKind) {
+        lock.lock()
+        images[kind] = image
+        lock.unlock()
+    }
+
+    public var ready: Set<MaskKind> {
+        lock.lock()
+        defer { lock.unlock() }
+        return Set(images.keys)
+    }
+}
+
+public final class Masker: @unchecked Sendable {
+    public static let modelURL: URL = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Nocturne/Models/DepthAnythingV2SmallF16.mlmodelc")
+
+    private let engine: Engine
+    private var model: VNCoreMLModel?
+    private var triedModel = false
+    private let lock = NSLock()
+
+    public init(engine: Engine) {
+        self.engine = engine
+    }
+
+    public var depthAvailable: Bool {
+        FileManager.default.fileExists(atPath: Masker.modelURL.path)
+    }
+
+    private func depthModel() -> VNCoreMLModel? {
+        lock.lock()
+        defer { lock.unlock() }
+        if triedModel { return model }
+        triedModel = true
+        let config = MLModelConfiguration()
+        config.computeUnits = .cpuOnly
+        if let ml = try? MLModel(contentsOf: Masker.modelURL, configuration: config) {
+            model = try? VNCoreMLModel(for: ml)
+        }
+        return model
+    }
+
+    public func compute(_ kinds: Set<MaskKind>, source: CIImage, into set: MaskSet) {
+        let missing = kinds.subtracting(set.ready)
+        guard !missing.isEmpty, let cg = engine.cgImage(source, maxEdge: 1536) else { return }
+        let extent = source.extent
+        let frame = CGRect(x: 0, y: 0, width: cg.width, height: cg.height)
+        let raw: [CIImageOption: Any] = [.colorSpace: NSNull()]
+        let empty = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: extent)
+
+        if missing.contains(.subject) || missing.contains(.background) {
+            var mask: CIImage?
+            let request = VNGenerateForegroundInstanceMaskRequest()
+            let handler = VNImageRequestHandler(cgImage: cg)
+            if (try? handler.perform([request])) != nil, let obs = request.results?.first, !obs.allInstances.isEmpty,
+               let buffer = try? obs.generateScaledMaskForImage(forInstances: obs.allInstances, from: handler) {
+                mask = CIImage(cvPixelBuffer: buffer, options: raw)
+            }
+            if let mask {
+                let fitted = fit(mask, to: frame)
+                set.set(finish(fitted, frame: frame, extent: extent) ?? empty, for: .subject)
+                set.set(finish(fitted.applyingFilter("CIColorInvert"), frame: frame, extent: extent) ?? empty, for: .background)
+            } else {
+                set.set(empty, for: .subject)
+                set.set(CIImage(color: CIColor(red: 1, green: 1, blue: 1)).cropped(to: extent), for: .background)
+            }
+        }
+
+        if missing.contains(.person) {
+            let request = VNGeneratePersonSegmentationRequest()
+            request.qualityLevel = .accurate
+            request.outputPixelFormat = kCVPixelFormatType_OneComponent8
+            var mask: CIImage?
+            if (try? VNImageRequestHandler(cgImage: cg).perform([request])) != nil, let obs = request.results?.first {
+                mask = CIImage(cvPixelBuffer: obs.pixelBuffer, options: raw)
+            }
+            set.set(mask.flatMap { finish(fit($0, to: frame), frame: frame, extent: extent) } ?? empty, for: .person)
+        }
+
+        let depthKinds = missing.filter { $0.needsDepth }
+        if !depthKinds.isEmpty, let model = depthModel() {
+            let request = VNCoreMLRequest(model: model)
+            request.imageCropAndScaleOption = .scaleFill
+            guard (try? VNImageRequestHandler(cgImage: cg).perform([request])) != nil,
+                  let obs = request.results?.first as? VNPixelBufferObservation else { return }
+            guard let values = floatImage(obs.pixelBuffer) else { return }
+            let depth = fit(values, to: frame)
+            let guide = CIImage(cgImage: cg)
+            for kind in depthKinds {
+                let args: [Any]
+                switch kind {
+                case .sky: args = [depth, 0.002, 0.008, 1.0]
+                case .far: args = [depth, 0.10, 0.35, 1.0]
+                default: args = [depth, 0.40, 0.70, 0.0]
+                }
+                guard var mask = engine.kernels.step.apply(extent: frame, arguments: args) else { continue }
+                mask = mask.applyingFilter("CIGuidedFilter", parameters: [
+                    "inputGuideImage": guide, "inputRadius": 8.0, "inputEpsilon": 0.0008
+                ]).cropped(to: frame)
+                set.set(finish(mask, frame: frame, extent: extent) ?? empty, for: kind)
+            }
+        }
+    }
+
+    private func floatImage(_ buffer: CVPixelBuffer) -> CIImage? {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        let w = CVPixelBufferGetWidth(buffer)
+        let h = CVPixelBufferGetHeight(buffer)
+        let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+        guard let base = CVPixelBufferGetBaseAddress(buffer), w > 0, h > 0 else { return nil }
+        var values = [Float](repeating: 0, count: w * h)
+        switch CVPixelBufferGetPixelFormatType(buffer) {
+        case kCVPixelFormatType_OneComponent16Half:
+            var src = vImage_Buffer(data: base, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: rowBytes)
+            values.withUnsafeMutableBytes { raw in
+                var dst = vImage_Buffer(data: raw.baseAddress, height: vImagePixelCount(h), width: vImagePixelCount(w), rowBytes: w * 4)
+                vImageConvert_Planar16FtoPlanarF(&src, &dst, 0)
+            }
+        case kCVPixelFormatType_OneComponent32Float:
+            values.withUnsafeMutableBytes { raw in
+                for y in 0..<h {
+                    memcpy(raw.baseAddress!.advanced(by: y * w * 4), base.advanced(by: y * rowBytes), w * 4)
+                }
+            }
+        default:
+            return CIImage(cvPixelBuffer: buffer, options: [.colorSpace: NSNull()])
+        }
+        let data = values.withUnsafeBufferPointer { Data(buffer: $0) }
+        return CIImage(bitmapData: data, bytesPerRow: w * 4, size: CGSize(width: w, height: h), format: .Rf, colorSpace: nil)
+    }
+
+    private func fit(_ image: CIImage, to frame: CGRect) -> CIImage {
+        let e = image.extent
+        let t = CGAffineTransform(translationX: -e.minX, y: -e.minY)
+            .concatenating(CGAffineTransform(scaleX: frame.width / e.width, y: frame.height / e.height))
+        return image.clampedToExtent().transformed(by: t).cropped(to: frame)
+    }
+
+    private func finish(_ mask: CIImage, frame: CGRect, extent: CGRect) -> CIImage? {
+        guard let cg = engine.context.createCGImage(mask, from: frame, format: .RGBA8, colorSpace: engine.working) else { return nil }
+        let image = CIImage(cgImage: cg, options: [.colorSpace: NSNull()])
+        let t = CGAffineTransform(scaleX: extent.width / frame.width, y: extent.height / frame.height)
+        return image.clampedToExtent().transformed(by: t).cropped(to: extent)
+    }
+}

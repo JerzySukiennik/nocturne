@@ -22,6 +22,13 @@ public struct Photo: Identifiable, Hashable, Sendable {
     public var sortDate: Date { meta.date ?? modified }
 }
 
+public struct Preset: Identifiable, Sendable, Equatable {
+    public let name: String
+    public let recipe: Recipe
+
+    public var id: String { name }
+}
+
 struct Project: Codable {
     var original: String
     var recipe: Recipe
@@ -34,7 +41,13 @@ public final class Library: @unchecked Sendable {
     private var pending: DispatchWorkItem?
 
     public init(root: URL? = nil) {
-        self.root = root ?? fm.urls(for: .picturesDirectory, in: .userDomainMask)[0].appendingPathComponent("Nocturne")
+        if let root {
+            self.root = root
+        } else if let override = ProcessInfo.processInfo.environment["NOCTURNE_ROOT"], !override.isEmpty {
+            self.root = URL(fileURLWithPath: override)
+        } else {
+            self.root = fm.urls(for: .picturesDirectory, in: .userDomainMask)[0].appendingPathComponent("Nocturne")
+        }
     }
 
     public func folder(_ shelf: Shelf) -> URL {
@@ -49,7 +62,35 @@ public final class Library: @unchecked Sendable {
         folder(.processed).appendingPathComponent("Originals")
     }
 
+    var presetsFolder: URL {
+        root.appendingPathComponent("Presets")
+    }
+
+    public func presets() -> [Preset] {
+        let items = (try? fm.contentsOfDirectory(at: presetsFolder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        var out: [Preset] = []
+        for url in items where url.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: url), let recipe = try? JSONDecoder().decode(Recipe.self, from: data) else { continue }
+            out.append(Preset(name: url.deletingPathExtension().lastPathComponent, recipe: recipe))
+        }
+        return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    public func savePreset(name: String, recipe: Recipe) throws {
+        let clean = Library.cleanName(name)
+        guard !clean.isEmpty else { return }
+        try fm.createDirectory(at: presetsFolder, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(recipe.fresh()).write(to: presetsFolder.appendingPathComponent(clean + ".json"), options: .atomic)
+    }
+
+    public func deletePreset(_ name: String) {
+        try? fm.removeItem(at: presetsFolder.appendingPathComponent(name + ".json"))
+    }
+
     public func prepare() throws {
+        try fm.createDirectory(at: presetsFolder, withIntermediateDirectories: true)
         for shelf in Shelf.allCases {
             try fm.createDirectory(at: hidden(shelf), withIntermediateDirectories: true)
         }
@@ -211,13 +252,15 @@ public final class ThumbnailStore: @unchecked Sendable {
     public static let edge: CGFloat = 640
     private let engine: Engine
     private let library: Library
+    private let masker: Masker
     private let cache = NSCache<NSString, CGImage>()
     private let dir: URL
     private let queue: OperationQueue
 
-    public init(engine: Engine, library: Library) {
+    public init(engine: Engine, library: Library, masker: Masker) {
         self.engine = engine
         self.library = library
+        self.masker = masker
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         dir = base.appendingPathComponent("fun.gzowo.nocturne/thumbs")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -263,7 +306,11 @@ public final class ThumbnailStore: @unchecked Sendable {
     private func make(_ photo: Photo) -> CGImage? {
         let recipe = photo.shelf == .toProcess ? library.loadRecipe(for: photo) : Recipe()
         if recipe.hasEffect, let source = try? engine.load(photo.url) {
-            return engine.cgImage(engine.render(source.image, recipe: recipe), maxEdge: ThumbnailStore.edge)
+            let masks = MaskSet()
+            if !recipe.maskKinds.isEmpty {
+                masker.compute(recipe.maskKinds, source: source.image, into: masks)
+            }
+            return engine.cgImage(engine.render(source.image, recipe: recipe, masks: masks), maxEdge: ThumbnailStore.edge)
         }
         guard let src = CGImageSourceCreateWithURL(photo.url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [

@@ -55,9 +55,12 @@ case "describe":
     let start = Date()
     let answer = try await Gemini().describeLook(prompt: args[2], preview: preview, previous: [])
     print(String(format: "answer %.1fs", Date().timeIntervalSince(start)), answer.note)
-    for step in answer.steps { print(" ", step.kind.rawValue, step.name, step.params) }
+    for step in answer.steps { print(" ", step.kind.rawValue, step.mask?.rawValue ?? "all", step.name, step.params) }
     if args.count > 3 {
-        let image = engine.scaled(engine.render(source.image, recipe: Recipe(steps: answer.steps)), maxEdge: 1400)
+        let recipe = Recipe(steps: answer.steps)
+        let masks = MaskSet()
+        if !recipe.maskKinds.isEmpty { Masker(engine: engine).compute(recipe.maskKinds, source: source.image, into: masks) }
+        let image = engine.scaled(engine.render(source.image, recipe: recipe, masks: masks), maxEdge: 1400)
         try engine.export(image, to: URL(fileURLWithPath: args[3]), properties: [:])
     }
 
@@ -95,6 +98,36 @@ case "bench":
             timed("\(label) #\(round)") { _ = engine.context.createCGImage(image, from: image.extent) }
         }
     }
+
+case "masks":
+    guard args.count >= 3 else { fail("masks <in> <outdir>") }
+    let source = try engine.load(URL(fileURLWithPath: args[1]))
+    let masker = Masker(engine: engine)
+    let set = MaskSet()
+    print("depth model available:", masker.depthAvailable)
+    for group: Set<MaskKind> in [[.subject, .background], [.person], [.sky, .near, .far]] {
+        timed("masks \(group.map { $0.rawValue }.sorted())") { masker.compute(group, source: source.image, into: set) }
+    }
+    for kind in MaskKind.allCases {
+        guard let mask = set.image(kind) else { print("missing", kind.rawValue); continue }
+        let out = URL(fileURLWithPath: args[2]).appendingPathComponent("mask-\(kind.rawValue).jpg")
+        try engine.export(engine.scaled(mask, maxEdge: 700), to: out, properties: [:])
+    }
+    let look = Recipe(steps: [
+        Step(kind: .light, params: ["exposure": -1.0], mask: .sky),
+        Step(kind: .light, params: ["exposure": 0.6, "shadows": 30], mask: .near)
+    ])
+    let graded = engine.scaled(engine.render(source.image, recipe: look, masks: set), maxEdge: 1200)
+    try engine.export(graded, to: URL(fileURLWithPath: args[2]).appendingPathComponent("masked-look.jpg"), properties: [:])
+
+case "match":
+    guard args.count >= 4 else { fail("match <in> <reference> <out.jpg>") }
+    let source = try engine.load(URL(fileURLWithPath: args[1]))
+    let reference = try engine.load(URL(fileURLWithPath: args[2]))
+    guard let step = timed("stats", { engine.matchStep(reference: reference.image, current: source.image) }) else { fail("no stats") }
+    print("data", step.data?.map { String(format: "%.3f", $0) }.joined(separator: " ") ?? "")
+    let image = engine.scaled(engine.render(source.image, recipe: Recipe(steps: [step])), maxEdge: 1200)
+    try engine.export(image, to: URL(fileURLWithPath: args[3]), properties: [:])
 
 default:
     fail("unknown command \(command)")

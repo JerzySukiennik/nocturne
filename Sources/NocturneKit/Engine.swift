@@ -78,7 +78,7 @@ public final class Engine: @unchecked Sendable {
         return SourceImage(image: img, isRAW: false, properties: props)
     }
 
-    public func render(_ source: CIImage, recipe: Recipe) -> CIImage {
+    public func render(_ source: CIImage, recipe: Recipe, masks: MaskSet? = nil) -> CIImage {
         var img = source
         let extent = source.extent
         let long = max(extent.width, extent.height)
@@ -113,6 +113,13 @@ public final class Engine: @unchecked Sendable {
                     step.value("highlightAmount") / 100,
                     step.value("balance") / 100
                 ])
+            case .splash:
+                next = kernels.splash.apply(extent: extent, arguments: [
+                    img,
+                    step.value("hue") / 360,
+                    step.value("range") / 360,
+                    step.value("amount") / 100
+                ])
             case .vignette:
                 next = kernels.vignette.apply(extent: extent, arguments: [
                     img,
@@ -131,8 +138,26 @@ public final class Engine: @unchecked Sendable {
                     .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
                     .cropped(to: extent)
                 next = kernels.grain.apply(extent: extent, arguments: [img, noise, step.value("amount") / 100])
+            case .match:
+                guard let d = step.data, d.count == Step.matchCount else { continue }
+                func vec(_ i: Int) -> CIVector {
+                    CIVector(x: d[i], y: d[i + 1], z: d[i + 2], w: d[i + 3])
+                }
+                next = kernels.match.apply(extent: extent, arguments: [
+                    img, CIVector(x: d[0], y: d[1], z: d[14], w: d[15]),
+                    vec(2), vec(16), vec(6), vec(20), vec(10), vec(24),
+                    step.value("amount") / 100
+                ])
             }
-            if let next { img = next }
+            guard let next else { continue }
+            if let kind = step.mask {
+                guard let mask = masks?.image(kind) else { continue }
+                img = next.applyingFilter("CIBlendWithRedMask", parameters: [
+                    kCIInputBackgroundImageKey: img, kCIInputMaskImageKey: mask
+                ])
+            } else {
+                img = next
+            }
         }
         return img
     }
