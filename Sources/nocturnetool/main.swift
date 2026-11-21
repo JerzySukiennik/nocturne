@@ -137,8 +137,9 @@ case "lens":
     timed("depth") { masker.compute([], depth: true, source: source.image, into: set) }
     let looks: [(String, [Step])] = [
         ("lamp", [Step(kind: .lamp, params: ["x": 25, "y": 55, "height": 35, "intensity": 70, "warmth": 60, "ambient": -50])]),
-        ("lampdefault", [Step(kind: .lamp)]),
-        ("lamplow", [Step(kind: .lamp, params: ["x": 80, "y": 70, "height": 10, "intensity": 90, "warmth": -40, "ambient": -70, "radius": 70])]),
+        ("lampdefault", [Step(kind: .lamp, params: ["x": 30, "y": 80])]),
+        ("lampstrong", [Step(kind: .lamp, params: ["x": 30, "y": 80, "intensity": 100])]),
+        ("lampbehind", [Step(kind: .lamp, params: ["x": 52, "y": 70, "height": 38, "intensity": 100, "warmth": 60, "ambient": -60, "radius": 45])]),
         ("glow", [Step(kind: .halation, params: ["amount": 70]), Step(kind: .bloom, params: ["amount": 50])]),
         ("streaks", [Step(kind: .streaks, params: ["amount": 80, "length": 70]), Step(kind: .fringe, params: ["amount": 100])])
     ]
@@ -153,6 +154,27 @@ case "lens":
         let image = engine.scaled(engine.render(source.image, recipe: recipe, masks: set), maxEdge: 900)
         try engine.export(image, to: URL(fileURLWithPath: args[2]).appendingPathComponent("lens-\(label).jpg"), properties: [:])
     }
+
+case "clean":
+    guard args.count >= 7 else { fail("clean <in> <out.jpg> x0 y0 x1 y1 (0..1 from the top-left)") }
+    let source = try engine.load(URL(fileURLWithPath: args[1]))
+    let e = source.image.extent
+    let nums = args[3...6].compactMap { Double($0) }
+    let points = [CGPoint(x: nums[0] * e.width, y: (1 - nums[1]) * e.height), CGPoint(x: nums[2] * e.width, y: (1 - nums[3]) * e.height)]
+    let radius = max(e.width, e.height) * (args.count > 7 ? (Double(args[7]) ?? 0.02) : 0.02)
+    guard let mask = engine.strokeMask(points: points, radius: radius, extent: e) else { fail("no mask") }
+    let painter = Inpainter(engine: engine)
+    print("model available:", painter.available)
+    let region = Engine.strokeRegion(points: points, radius: radius, extent: e)
+    var patch: CIImage?
+    for round in 1...2 { patch = timed("inpaint #\(round)") { painter.patch(base: source.image, mask: mask, region: region) } }
+    guard let patch else { fail("inpainting failed") }
+    let view = region.insetBy(dx: -region.width * 1.5, dy: -region.height * 1.0).intersection(e)
+    let after = patch.composited(over: source.image).cropped(to: view)
+    let before = source.image.cropped(to: view).transformed(by: CGAffineTransform(translationX: -view.width - 8, y: 0))
+    let both = before.composited(over: after)
+    let moved = both.transformed(by: CGAffineTransform(translationX: -both.extent.minX, y: -both.extent.minY))
+    try engine.export(engine.scaled(moved, maxEdge: 1500), to: URL(fileURLWithPath: args[2]), properties: [:])
 
 default:
     fail("unknown command \(command)")

@@ -141,17 +141,21 @@ enum KernelSource {
         float dist = length(v);
         float3 ld = v / max(dist, 0.001);
         float diffuse = clamp((dot(n, ld) + 0.25) / 1.25, 0.0, 1.0);
-        float atten = 1.0 / (1.0 + (dist * dist) / (radius * radius));
+        float far = length(float3(v.xy, v.z * 2.5));
+        float atten = 1.0 / (1.0 + (far * far) / (radius * radius));
         float occ = 0.0;
         float jitter = fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
         for (int i = 0; i < 28; i++) {
             float t = (float(i) + 0.3 + jitter) / 29.0;
             float3 q = pos + v * t;
-            float hq = depth.sample(depth.transform(q.xy)).r * relief;
-            occ = max(occ, clamp((hq - q.z) / (0.10 * relief), 0.0, 1.0) * (1.0 - t * 0.6));
+            float dz = depth.sample(depth.transform(q.xy)).r * relief - q.z;
+            float block = smoothstep(0.0, 0.05 * relief, dz) * (1.0 - smoothstep(0.07 * relief, 0.14 * relief, dz));
+            occ = max(occ, block * (1.0 - t * 0.6));
         }
-        float reach = smoothstep(0.004, 0.02, d0) * mix(0.2, 1.0, smoothstep(0.02, 0.35, d0));
-        float lit = intensity * diffuse * atten * reach * (1.0 - occ * shadow);
+        float reach = smoothstep(0.004, 0.02, d0);
+        float back = smoothstep(0.0, 0.08 * relief, -v.z);
+        float rim = back * pow(clamp(1.0 - n.z, 0.0, 1.0), 1.4) * 2.2;
+        float lit = intensity * (diffuse * (1.0 - occ * shadow) + rim) * atten * reach;
         return float4(color.rgb * lit, 1.0);
     }
 

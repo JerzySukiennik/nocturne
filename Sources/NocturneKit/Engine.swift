@@ -79,10 +79,10 @@ public final class Engine: @unchecked Sendable {
     }
 
     public func render(_ source: CIImage, recipe: Recipe, masks: MaskSet? = nil) -> CIImage {
-        var img = source
+        var img = cleaned(source, recipe: recipe, masks: masks)
         let extent = source.extent
         let long = max(extent.width, extent.height)
-        for step in recipe.steps where step.on && !step.isNeutral {
+        for step in recipe.steps where step.on && !step.isNeutral && step.kind != .cleanup {
             let next: CIImage?
             switch step.kind {
             case .light:
@@ -148,6 +148,8 @@ public final class Engine: @unchecked Sendable {
                     vec(2), vec(16), vec(6), vec(20), vec(10), vec(24),
                     step.value("amount") / 100
                 ])
+            case .cleanup:
+                continue
             case .halation:
                 let high = kernels.high.apply(extent: extent, arguments: [img, 0.45]) ?? img
                 let soft = softCopy(high, sigma: long * (0.004 + 0.02 * step.value("spread") / 100), down: 4)
@@ -192,11 +194,11 @@ public final class Engine: @unchecked Sendable {
                 let args: [Any] = [
                     d,
                     CIVector(x: step.value("x") / 100 * map.width, y: (1 - step.value("y") / 100) * map.height),
-                    relief * (0.15 + 1.6 * step.value("height") / 100),
+                    relief * (step.value("height") / 100 * 1.25 - 0.05),
                     relief,
                     640 * (0.08 + 0.9 * step.value("radius") / 100),
                     color,
-                    step.value("intensity") / 100 * 2.5,
+                    step.value("intensity") / 100 * 4.0,
                     step.value("shadow") / 100
                 ]
                 guard let light = kernels.lamp.apply(extent: map, roiCallback: { _, _ in map.insetBy(dx: -4, dy: -4) }, arguments: args) else { continue }

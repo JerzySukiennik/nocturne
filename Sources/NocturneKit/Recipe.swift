@@ -50,7 +50,7 @@ public enum MaskKind: String, Codable, CaseIterable, Sendable {
 }
 
 public enum StepKind: String, Codable, CaseIterable, Sendable {
-    case light, color, grade, splash, vignette, mist, grain, match, lamp, bokeh, halation, bloom, streaks, fringe
+    case light, color, grade, splash, vignette, mist, grain, match, lamp, bokeh, halation, bloom, streaks, fringe, cleanup
 
     public static let tone: [StepKind] = [.light, .color, .grade, .splash]
     public static let lens: [StepKind] = [.mist, .halation, .bloom, .bokeh, .streaks, .fringe, .vignette, .grain]
@@ -71,13 +71,15 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
         case .bloom: return "Bloom"
         case .streaks: return "Streaks"
         case .fringe: return "Fringe"
+        case .cleanup: return "Clean Up"
         }
     }
 
     public var hint: String? {
         switch self {
-        case .lamp: return "Click or drag on the photo to place the lamp."
+        case .lamp: return "Click or drag on the photo to place the lamp. Depth moves it toward you or back, behind things."
         case .bokeh: return "Click the photo to choose what stays sharp."
+        case .cleanup: return "Paint over what should disappear. Each stroke is filled in when you let go."
         default: return nil
         }
     }
@@ -98,6 +100,7 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
         case .bloom: return "sparkles"
         case .streaks: return "arrow.left.and.right"
         case .fringe: return "rainbow"
+        case .cleanup: return "bandage"
         }
     }
 
@@ -154,9 +157,9 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
             ]
         case .lamp:
             return [
-                ParamSpec("intensity", "Power", 0, 100, 50),
+                ParamSpec("intensity", "Power", 0, 100, 40),
+                ParamSpec("height", "Depth", 0, 100, 75),
                 ParamSpec("radius", "Reach", 0, 100, 50),
-                ParamSpec("height", "Height", 0, 100, 50),
                 ParamSpec("warmth", "Warmth", -100, 100, 20),
                 ParamSpec("shadow", "Shadows", 0, 100, 50),
                 ParamSpec("ambient", "Dim scene", -100, 0),
@@ -189,6 +192,8 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
             return [
                 ParamSpec("amount", "Amount", 0, 100)
             ]
+        case .cleanup:
+            return []
         }
     }
 
@@ -199,6 +204,7 @@ public enum StepKind: String, Codable, CaseIterable, Sendable {
         case .grade: return ["shadowAmount", "highlightAmount"]
         case .splash, .vignette, .mist, .grain, .match, .bokeh, .halation, .bloom, .streaks, .fringe: return ["amount"]
         case .lamp: return ["intensity", "ambient"]
+        case .cleanup: return []
         }
     }
 }
@@ -214,6 +220,7 @@ public struct Step: Codable, Identifiable, Equatable, Sendable {
     public var params: [String: Double]
     public var mask: MaskKind?
     public var data: [Double]?
+    public var asset: String?
 
     public init(kind: StepKind, name: String? = nil, ai: Bool = false, params: [String: Double] = [:], mask: MaskKind? = nil, data: [Double]? = nil) {
         self.id = UUID()
@@ -238,6 +245,7 @@ public struct Step: Codable, Identifiable, Equatable, Sendable {
 
     public var isNeutral: Bool {
         if kind == .match && (data?.count ?? 0) != Step.matchCount { return true }
+        if kind == .cleanup { return asset == nil }
         return kind.drivers.allSatisfy { abs(value($0)) < 0.0001 }
     }
 
@@ -275,6 +283,14 @@ public struct Recipe: Codable, Equatable, Sendable {
 
     public var needsDepth: Bool {
         steps.contains { $0.on && !$0.isNeutral && $0.usesDepth }
+    }
+
+    public var withoutCleanup: Recipe {
+        Recipe(steps: steps.filter { $0.kind != .cleanup })
+    }
+
+    public var cleanupSteps: [Step] {
+        steps.filter { $0.kind == .cleanup }
     }
 
     public func fresh() -> Recipe {

@@ -48,10 +48,12 @@ PLIST
 IDENTITY="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -1)"
 codesign --force --sign "${IDENTITY:--}" "$OUT" 2>/dev/null
 MODELS="$HOME/Library/Application Support/Nocturne/Models"
-if [ ! -d "$MODELS/DepthAnythingV2SmallF16.mlmodelc" ] && [ -d "Niepotrzebne/models/DepthAnythingV2SmallF16.mlmodelc" ]; then
-  mkdir -p "$MODELS"
-  cp -R "Niepotrzebne/models/DepthAnythingV2SmallF16.mlmodelc" "$MODELS/"
-fi
+for MODEL in DepthAnythingV2SmallF16 LaMa; do
+  if [ ! -d "$MODELS/$MODEL.mlmodelc" ] && [ -d "Niepotrzebne/models/$MODEL.mlmodelc" ]; then
+    mkdir -p "$MODELS"
+    cp -R "Niepotrzebne/models/$MODEL.mlmodelc" "$MODELS/"
+  fi
+done
 if [ "${1:-}" = "install" ]; then
   rm -rf "/Applications/Nocturne.app"
   cp -R "$OUT" "/Applications/Nocturne.app"

@@ -44,6 +44,9 @@ private struct TopLine: View {
                 if model.maskBusy {
                     Text("Finding masks…").shadow(color: .black.opacity(0.7), radius: 6, y: 1)
                 }
+                if model.cleanBusy {
+                    Text("Cleaning up…").shadow(color: .black.opacity(0.7), radius: 6, y: 1)
+                }
                 Text(caption)
                     .shadow(color: .black.opacity(0.7), radius: 6, y: 1)
             }
@@ -107,6 +110,8 @@ private struct Rail: View {
                 Rectangle().fill(Color.white.opacity(0.14)).frame(width: 20, height: 1).padding(.vertical, 3)
                 RailButton(kind: .lamp)
                 lensButton
+                Rectangle().fill(Color.white.opacity(0.14)).frame(width: 20, height: 1).padding(.vertical, 3)
+                RailButton(kind: .cleanup)
             }
             .padding(6)
             .glass(RoundedRectangle(cornerRadius: 14))
@@ -173,15 +178,15 @@ private struct RailButton: View {
     let kind: StepKind
 
     var body: some View {
-        let active: Bool = model.recipe.steps.contains { $0.id == model.selectedStep && $0.kind == kind }
+        let active: Bool = kind == .cleanup ? model.cleanupActive : model.recipe.steps.contains { $0.id == model.selectedStep && $0.kind == kind }
         Button {
             model.focusTool(kind)
         } label: {
             Image(systemName: kind.symbol)
                 .font(.system(size: 15))
                 .frame(width: 32, height: 32)
-                .foregroundStyle(active ? Color.white : Color.white.opacity(0.7))
-                .background(active ? Color.white.opacity(0.14) : Color.clear, in: ConcentricRectangle())
+                .foregroundStyle(active ? (kind == .cleanup ? Color(white: 0.08) : Color.white) : Color.white.opacity(0.7))
+                .background(active ? (kind == .cleanup ? Theme.accent : Color.white.opacity(0.14)) : Color.clear, in: ConcentricRectangle())
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -276,7 +281,9 @@ private struct StepRow: View {
                 ForEach(step.kind.params) { spec in
                     ParamRow(step: step, spec: spec)
                 }
-                MaskRow(step: step)
+                if step.kind != .cleanup {
+                    MaskRow(step: step)
+                }
             }
         }
         .padding(.horizontal, 10)
@@ -369,6 +376,8 @@ private struct BottomDock: View {
             Spacer()
             if model.exportDraft != nil {
                 ExportCard()
+            } else if model.cleanupActive {
+                CleanupCard()
             } else if model.presetsOpen {
                 PresetsCard()
             } else {
@@ -394,6 +403,50 @@ private struct BottomDock: View {
             Pill()
         }
         .padding(.bottom, 22)
+    }
+}
+
+private struct CleanupCard: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "bandage").font(.system(size: 15)).foregroundStyle(Theme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Clean Up").font(.system(size: 13, weight: .semibold))
+                Text(status)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.white.opacity(0.6))
+            }
+            Spacer(minLength: 8)
+            if model.cleanBusy || !model.cleanReady {
+                ProgressView().controlSize(.small)
+            }
+            Text("Brush").font(.system(size: 11)).foregroundStyle(Color.white.opacity(0.55))
+            ThinSlider(value: model.brush, range: 0.4...6, neutral: 0.4, onBegin: {}, onChange: { model.brush = $0 }, onEnd: {})
+                .frame(width: 110)
+            Button {
+                model.toggleCleanup()
+            } label: {
+                Text("Done")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(white: 0.08))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 5)
+                    .background(Theme.accent, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(width: 580)
+        .glass(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var status: String {
+        if model.cleanBusy { return "Filling in…" }
+        if !model.cleanReady { return "Getting ready, the first time takes a few seconds…" }
+        return "Paint over what should disappear. Cmd+Z brings it back."
     }
 }
 

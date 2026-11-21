@@ -7,6 +7,7 @@ import Vision
 
 public final class MaskSet: @unchecked Sendable {
     private var images: [MaskKind: CIImage] = [:]
+    private var layers: [String: CIImage] = [:]
     private var depthImage: CIImage?
     private var depthValues: [Float] = []
     private var depthWidth = 0
@@ -31,6 +32,26 @@ public final class MaskSet: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return Set(images.keys)
+    }
+
+    public func layer(_ name: String) -> CIImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return layers[name]
+    }
+
+    public func setLayer(_ image: CIImage, name: String) {
+        lock.lock()
+        layers[name] = image
+        lock.unlock()
+    }
+
+    public func keepingLayers() -> MaskSet {
+        let next = MaskSet()
+        lock.lock()
+        next.layers = layers
+        lock.unlock()
+        return next
     }
 
     public var depth: CIImage? {
@@ -90,7 +111,7 @@ public final class Masker: @unchecked Sendable {
     }
 
     public func prepare(_ recipe: Recipe, source: CIImage, into set: MaskSet) {
-        compute(recipe.maskKinds, depth: recipe.needsDepth, source: source, into: set)
+        compute(recipe.maskKinds, depth: recipe.needsDepth, source: engine.cleaned(source, recipe: recipe, masks: set), into: set)
     }
 
     public func compute(_ kinds: Set<MaskKind>, depth wantDepth: Bool = false, source: CIImage, into set: MaskSet) {
@@ -162,6 +183,9 @@ public final class Masker: @unchecked Sendable {
             mask = mask.applyingFilter("CIGuidedFilter", parameters: [
                 "inputGuideImage": guide, "inputRadius": 8.0, "inputEpsilon": 0.0008
             ]).cropped(to: frame)
+            if kind == .sky {
+                mask = mask.clampedToExtent().applyingGaussianBlur(sigma: frame.width * 0.004).cropped(to: frame)
+            }
             set.set(finish(mask, frame: frame, extent: extent) ?? empty, for: kind)
         }
     }

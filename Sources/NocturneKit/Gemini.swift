@@ -59,7 +59,7 @@ public final class Gemini: @unchecked Sendable {
     grade: shadowHue [0,360], shadowAmount [0,100], highlightHue [0,360], highlightAmount [0,100], balance [-100,100]
     splash: amount [0,100], hue [0,360], range [5,180] (color splash: everything outside one band of hues turns black and white; hue is the color that stays, 0 red, 30 orange, 55 yellow, 120 green, 210 blue, 300 magenta; range is how wide the band is)
     vignette: amount [-100,100] (negative darkens the edges), size [0,100]
-    lamp: a virtual 3D light placed in the scene, lit along the real shapes with shadows. x [0,100] from the left edge, y [0,100] from the top edge, height [0,100] (low gives raking light and long shadows), intensity [0,100], radius [0,100] (reach), warmth [-100,100], shadow [0,100], ambient [-100,0] (dims everything else for drama)
+    lamp: a virtual 3D light placed in the scene, lit along the real shapes with shadows. x [0,100] from the left edge, y [0,100] from the top edge, height [0,100] (how deep the lamp sits in the scene: 100 is close to the camera in front of everything, 0 is far back; set it lower than the subject to backlight it with a rim of light), intensity [0,100], radius [0,100] (reach), warmth [-100,100], shadow [0,100], ambient [-100,0] (dims everything else for drama)
     bokeh: lens blur from the depth map. amount [0,100], focus [0,100] (0 is the far distance, 100 the nearest thing), range [0,100] (size of the sharp zone)
     halation: amount [0,100], spread [0,100] (red film glow around bright lights)
     bloom: amount [0,100], spread [0,100], threshold [0,100] (white glow from highlights)

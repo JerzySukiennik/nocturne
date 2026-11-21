@@ -30,6 +30,7 @@ final class AppModel: ObservableObject {
     let library = Library()
     let masker: Masker
     let thumbs: ThumbnailStore
+    let inpainter: Inpainter
     let ai = Gemini()
 
     @Published var shelf: Shelf = .toProcess
@@ -59,6 +60,10 @@ final class AppModel: ObservableObject {
     @Published var presetsOpen = false
     @Published var presetName = ""
     @Published var hasCopiedLook = false
+    @Published var cleanupActive = false
+    @Published var cleanBusy = false
+    @Published var cleanReady = false
+    @Published var brush = 2.0
 
     var columns = 5
     private(set) var display: CIImage?
@@ -69,6 +74,7 @@ final class AppModel: ObservableObject {
     private var maskPreview: MaskKind?
     private var previewRecipe: Recipe?
     private var copiedLook: Recipe?
+    private var stroke: [CGPoint] = []
     private var undoStack: [Recipe] = []
     private var redoStack: [Recipe] = []
     private var editStart: Recipe?
@@ -81,6 +87,7 @@ final class AppModel: ObservableObject {
     init() {
         masker = Masker(engine: engine)
         thumbs = ThumbnailStore(engine: engine, library: library, masker: masker)
+        inpainter = Inpainter(engine: engine)
         try? library.prepare()
         presets = library.presets()
         reload()
@@ -219,8 +226,12 @@ final class AppModel: ObservableObject {
         prompt = ""
         source = nil
         masks = MaskSet()
+        library.loadLayers(for: photo, recipe: recipe, into: masks)
         maskFailed = []
         depthFailed = false
+        stroke = []
+        cleanBusy = false
+        cleanupActive = false
         maskPreview = nil
         previewRecipe = nil
         maskBusy = false
@@ -254,6 +265,7 @@ final class AppModel: ObservableObject {
         guard let photo = current else { return }
         let changed = dirty
         flushSave()
+        library.pruneAssets(for: photo, keeping: Set(recipe.cleanupSteps.compactMap { $0.asset }))
         guard changed, photo.shelf == .toProcess, let source else { return }
         let engine = engine
         let masker = masker
@@ -282,6 +294,8 @@ final class AppModel: ObservableObject {
         display = nil
         exportDraft = nil
         presetsOpen = false
+        cleanupActive = false
+        stroke = []
         previewRecipe = nil
         maskPreview = nil
         loading = false
@@ -312,10 +326,18 @@ final class AppModel: ObservableObject {
                     kCIInputBackgroundImageKey: image, kCIInputMaskImageKey: mask
                 ])
             }
+            if !stroke.isEmpty, let mask = engine.strokeMask(points: stroke, radius: brushRadius, extent: image.extent) {
+                let tint = CIImage(color: CIColor(red: 0.95, green: 0.85, blue: 0.54, alpha: 0.7)).cropped(to: image.extent)
+                image = tint.composited(over: image).applyingFilter("CIBlendWithRedMask", parameters: [
+                    kCIInputBackgroundImageKey: image, kCIInputMaskImageKey: mask
+                ])
+            }
             if previewRecipe == nil, let id = selectedStep, let step = recipe.steps.first(where: { $0.id == id }), step.kind == .lamp, step.on {
                 let e = image.extent
                 let center = CGPoint(x: step.value("x") / 100 * e.width, y: (1 - step.value("y") / 100) * e.height)
-                image = AppModel.marker(at: center, radius: max(e.width, e.height) * 0.011, extent: e).composited(over: image)
+                let surface = masks.depthValue(x: step.value("x") / 100, yFromTop: step.value("y") / 100) ?? 0
+                let behind = surface > step.value("height") / 100 * 1.25 - 0.05
+                image = AppModel.marker(at: center, radius: max(e.width, e.height) * 0.011, behind: behind, extent: e).composited(over: image)
             }
             display = image
         }
@@ -323,7 +345,7 @@ final class AppModel: ObservableObject {
         ensureMasks()
     }
 
-    private static func marker(at center: CGPoint, radius: CGFloat, extent: CGRect) -> CIImage {
+    private static func marker(at center: CGPoint, radius: CGFloat, behind: Bool, extent: CGRect) -> CIImage {
         func ring(_ inner: CGFloat, _ outer: CGFloat, _ color: CIColor) -> CIImage {
             CIFilter(name: "CIRadialGradient", parameters: [
                 "inputCenter": CIVector(cgPoint: center), "inputRadius0": inner, "inputRadius1": outer,
@@ -332,10 +354,103 @@ final class AppModel: ObservableObject {
         }
         let halo = ring(radius * 1.0, radius * 1.7, CIColor(red: 0, green: 0, blue: 0, alpha: 0.55))
         let dot = ring(radius * 0.6, radius * 0.95, CIColor(red: 1.0, green: 0.93, blue: 0.7, alpha: 1))
+        if behind {
+            let hole = ring(radius * 0.25, radius * 0.5, CIColor(red: 0, green: 0, blue: 0, alpha: 0.9))
+            return hole.composited(over: dot).composited(over: halo)
+        }
         return dot.composited(over: halo)
     }
 
+    private var brushRadius: CGFloat {
+        guard let source else { return 1 }
+        return max(source.image.extent.width, source.image.extent.height) * brush / 100
+    }
+
+    func toggleCleanup() {
+        cleanupActive.toggle()
+        stroke = []
+        guard cleanupActive else {
+            refresh()
+            return
+        }
+        selectedStep = nil
+        presetsOpen = false
+        exportDraft = nil
+        if !inpainter.available {
+            say("The Clean Up model is missing.", error: true)
+            cleanupActive = false
+            return
+        }
+        if !cleanReady {
+            let inpainter = inpainter
+            Task.detached(priority: .userInitiated) {
+                inpainter.warmUp()
+                await MainActor.run { self.cleanReady = true }
+            }
+        }
+    }
+
+    private func runCleanup() {
+        guard let source, let photo = current, !stroke.isEmpty else { return }
+        let points = stroke
+        let radius = brushRadius
+        let extent = source.image.extent
+        cleanBusy = true
+        let base = engine.cleaned(source.image, recipe: recipe, masks: masks)
+        let oldLayer = recipe.cleanupSteps.first?.asset.flatMap { masks.layer($0) }
+        let name = library.newAssetName(for: photo)
+        let url = library.assetURL(for: photo, name: name)
+        let engine = engine
+        let inpainter = inpainter
+        Task.detached(priority: .userInitiated) {
+            var layer: CIImage?
+            if let mask = engine.strokeMask(points: points, radius: radius, extent: extent),
+               let patch = inpainter.patch(base: base, mask: mask, region: Engine.strokeRegion(points: points, radius: radius, extent: extent)),
+               let cg = engine.flattenLayer(patch, over: oldLayer, extent: extent), engine.writePNG(cg, to: url) {
+                layer = CIImage(cgImage: cg)
+            }
+            let result = layer
+            await MainActor.run {
+                guard self.current?.id == photo.id else { return }
+                self.cleanBusy = false
+                self.cleanReady = true
+                self.stroke = []
+                guard let result else {
+                    self.say("Clean Up could not fill that spot.", error: true)
+                    self.refresh()
+                    return
+                }
+                let next = self.masks.keepingLayers()
+                next.setLayer(result, name: name)
+                self.masks = next
+                self.maskFailed = []
+                self.depthFailed = false
+                self.mutate { r in
+                    if let i = r.steps.firstIndex(where: { $0.kind == .cleanup }) {
+                        r.steps[i].asset = name
+                        r.steps[i].on = true
+                    } else {
+                        var step = Step(kind: .cleanup)
+                        step.asset = name
+                        r.steps.insert(step, at: 0)
+                    }
+                }
+            }
+        }
+    }
+
     func canvasPoint(_ p: CGPoint, phase: Int) -> Bool {
+        if cleanupActive {
+            guard let source, !cleanBusy, !showOriginal else { return true }
+            let e = source.image.extent
+            let point = CGPoint(x: min(max(p.x, 0), 1) * e.width, y: min(max(p.y, 0), 1) * e.height)
+            if phase == 0 { stroke = [point] } else { stroke.append(point) }
+            if phase == 2 {
+                runCleanup()
+            }
+            refresh()
+            return true
+        }
         guard !showOriginal, let id = selectedStep, let i = recipe.steps.firstIndex(where: { $0.id == id }) else { return false }
         let x = min(max(Double(p.x), 0), 1)
         let yTop = min(max(1 - Double(p.y), 0), 1)
@@ -372,8 +487,9 @@ final class AppModel: ObservableObject {
         let masker = masker
         let masks = masks
         let wanted = needed
+        let base = engine.cleaned(source.image, recipe: active, masks: masks)
         Task.detached(priority: .userInitiated) {
-            masker.compute(wanted, depth: wantDepth, source: source.image, into: masks)
+            masker.compute(wanted, depth: wantDepth, source: base, into: masks)
             await MainActor.run {
                 guard self.current?.id == photo.id, self.masks === masks else { return }
                 self.maskBusy = false
@@ -440,6 +556,14 @@ final class AppModel: ObservableObject {
     }
 
     func focusTool(_ kind: StepKind) {
+        if kind == .cleanup {
+            toggleCleanup()
+            return
+        }
+        if cleanupActive {
+            cleanupActive = false
+            stroke = []
+        }
         let addAnother = kind == .lamp && recipe.steps.contains { $0.id == selectedStep && $0.kind == .lamp }
         if !addAnother, let existing = recipe.steps.last(where: { $0.kind == kind && !$0.ai && $0.mask == nil }) {
             selectedStep = selectedStep == existing.id ? nil : existing.id
@@ -579,7 +703,7 @@ final class AppModel: ObservableObject {
         let name = Library.cleanName(presetName)
         guard !name.isEmpty, recipe.hasEffect else { return }
         do {
-            try library.savePreset(name: name, recipe: recipe)
+            try library.savePreset(name: name, recipe: recipe.withoutCleanup)
             presets = library.presets()
             presetName = ""
             say("Saved preset \(name).", error: false)
@@ -595,7 +719,8 @@ final class AppModel: ObservableObject {
 
     func previewPreset(_ preset: Preset?) {
         guard let source else { return }
-        let next = preset.map { engine.adapted($0.recipe, to: source.image, masks: masks) }
+        let keep = recipe.cleanupSteps
+        let next = preset.map { Recipe(steps: keep + engine.adapted($0.recipe, to: source.image, masks: masks).steps) }
         if next == nil && previewRecipe == nil { return }
         previewRecipe = next
         refresh()
@@ -603,7 +728,7 @@ final class AppModel: ObservableObject {
 
     func applyPreset(_ preset: Preset) {
         guard let source else { return }
-        let adapted = engine.adapted(preset.recipe, to: source.image, masks: masks)
+        let adapted = Recipe(steps: recipe.cleanupSteps + engine.adapted(preset.recipe, to: source.image, masks: masks).steps)
         previewRecipe = nil
         mutate { r in r = adapted }
         selectedStep = nil
@@ -621,9 +746,9 @@ final class AppModel: ObservableObject {
 
     func copyLook() {
         if current != nil {
-            copiedLook = recipe
+            copiedLook = recipe.withoutCleanup
         } else if let photo = photos.first(where: { $0.id == selection }) {
-            copiedLook = library.loadRecipe(for: photo)
+            copiedLook = library.loadRecipe(for: photo).withoutCleanup
         }
         hasCopiedLook = copiedLook?.hasEffect ?? false
         say(hasCopiedLook ? "Look copied." : "This photo has no look to copy.", error: !hasCopiedLook)
@@ -632,7 +757,7 @@ final class AppModel: ObservableObject {
     func pasteLook() {
         guard let look = copiedLook, look.hasEffect else { return }
         if let source, current != nil {
-            let adapted = engine.adapted(look, to: source.image, masks: masks)
+            let adapted = Recipe(steps: recipe.cleanupSteps + engine.adapted(look, to: source.image, masks: masks).steps)
             mutate { r in r = adapted }
             selectedStep = nil
             return
@@ -650,13 +775,15 @@ final class AppModel: ObservableObject {
         let needsSource = look.steps.contains { $0.kind == .match }
         Task.detached(priority: .userInitiated) {
             for (i, photo) in list.enumerated() {
-                var recipe = look.fresh()
+                let own = lib.loadRecipe(for: photo).cleanupSteps
+                var recipe = look.withoutCleanup.fresh()
                 if needsSource, let source = try? engine.load(photo.url) {
                     let masks = MaskSet()
-                    masker.prepare(look, source: source.image, into: masks)
-                    recipe = engine.adapted(look, to: source.image, masks: masks)
+                    lib.loadLayers(for: photo, recipe: Recipe(steps: own), into: masks)
+                    masker.prepare(Recipe(steps: own + look.steps), source: source.image, into: masks)
+                    recipe = engine.adapted(Recipe(steps: own + look.steps), to: source.image, masks: masks)
                 }
-                lib.saveRecipe(recipe, for: photo)
+                lib.saveRecipe(Recipe(steps: own + recipe.steps), for: photo)
                 await MainActor.run { self.batch?.done = i + 1 }
             }
             await MainActor.run {
@@ -682,7 +809,9 @@ final class AppModel: ObservableObject {
                 do {
                     let source = try engine.load(photo.url)
                     let recipe = lib.loadRecipe(for: photo)
-                    let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: MaskSet())
+                    let layers = MaskSet()
+                    lib.loadLayers(for: photo, recipe: recipe, into: layers)
+                    let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: layers)
                     var name = photo.url.deletingPathExtension().lastPathComponent
                     if let preview = engine.jpegData(image, maxEdge: 512, quality: 0.75), let suggestion = try? await ai.suggestName(preview: preview) {
                         name = suggestion
@@ -810,6 +939,8 @@ final class AppModel: ObservableObject {
             case 53:
                 if exportDraft != nil {
                     exportDraft = nil
+                } else if cleanupActive {
+                    toggleCleanup()
                 } else if presetsOpen {
                     presetsOpen = false
                     previewPreset(nil)

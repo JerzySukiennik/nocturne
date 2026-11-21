@@ -71,7 +71,7 @@ extension Engine {
 
     public func adapted(_ recipe: Recipe, to source: CIImage, masks: MaskSet?) -> Recipe {
         var out = Recipe()
-        for step in recipe.steps {
+        for step in recipe.steps where step.kind != .cleanup {
             var next = step.fresh()
             if next.kind == .match, let data = next.data, data.count == Step.matchCount {
                 let before = render(source, recipe: out, masks: masks)

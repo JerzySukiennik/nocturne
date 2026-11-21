@@ -169,6 +169,31 @@ public final class Library: @unchecked Sendable {
         }
     }
 
+    public func assetURL(for photo: Photo, name: String) -> URL {
+        hidden(photo.shelf).appendingPathComponent(name)
+    }
+
+    public func newAssetName(for photo: Photo) -> String {
+        "\(photo.name).clean-\(UUID().uuidString.prefix(8)).png"
+    }
+
+    public func loadLayers(for photo: Photo, recipe: Recipe, into set: MaskSet) {
+        for step in recipe.cleanupSteps {
+            guard let name = step.asset, set.layer(name) == nil else { continue }
+            if let image = CIImage(contentsOf: assetURL(for: photo, name: name)) {
+                set.setLayer(image, name: name)
+            }
+        }
+    }
+
+    public func pruneAssets(for photo: Photo, keeping: Set<String>) {
+        let items = (try? fm.contentsOfDirectory(at: hidden(photo.shelf), includingPropertiesForKeys: nil)) ?? []
+        let prefix = photo.name + ".clean-"
+        for url in items where url.lastPathComponent.hasPrefix(prefix) && !keeping.contains(url.lastPathComponent) {
+            try? fm.removeItem(at: url)
+        }
+    }
+
     public func recipeStamp(for photo: Photo) -> Date? {
         (try? recipeURL(for: photo).resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
@@ -218,6 +243,11 @@ public final class Library: @unchecked Sendable {
         try engine.export(image, to: target, properties: properties)
         let kept = unique(originals.appendingPathComponent(photo.name))
         try fm.moveItem(at: photo.url, to: kept)
+        for step in recipe.cleanupSteps {
+            guard let name = step.asset else { continue }
+            try? fm.moveItem(at: hidden(.toProcess).appendingPathComponent(name), to: hidden(.processed).appendingPathComponent(name))
+        }
+        pruneAssets(for: photo, keeping: [])
         let project = Project(original: "Originals/" + kept.lastPathComponent, recipe: recipe)
         let projectURL = hidden(.processed).appendingPathComponent(target.lastPathComponent + ".json")
         try encoder.encode(project).write(to: projectURL, options: .atomic)
@@ -228,6 +258,7 @@ public final class Library: @unchecked Sendable {
     public func trash(_ photo: Photo) throws {
         try fm.trashItem(at: photo.url, resultingItemURL: nil)
         try? fm.removeItem(at: recipeURL(for: photo))
+        pruneAssets(for: photo, keeping: [])
     }
 
     public func watch(_ onChange: @escaping @Sendable () -> Void) {
@@ -307,6 +338,7 @@ public final class ThumbnailStore: @unchecked Sendable {
         let recipe = photo.shelf == .toProcess ? library.loadRecipe(for: photo) : Recipe()
         if recipe.hasEffect, let source = try? engine.load(photo.url) {
             let masks = MaskSet()
+            library.loadLayers(for: photo, recipe: recipe, into: masks)
             masker.prepare(recipe, source: source.image, into: masks)
             return engine.cgImage(engine.render(source.image, recipe: recipe, masks: masks), maxEdge: ThumbnailStore.edge)
         }

@@ -78,7 +78,7 @@ struct ThinSlider: View {
                     .offset(x: x - 6)
             }
             .frame(height: 18)
-            .contentShape(Rectangle())
+            .contentShape(Rectangle().inset(by: -9))
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
