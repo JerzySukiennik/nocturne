@@ -43,6 +43,7 @@ final class AppModel: ObservableObject {
     @Published var thumbEpoch = 0
     @Published var scanned = false
     @Published var batch: BatchProgress?
+    @Published var cards: [CameraCard] = []
 
     @Published var current: Photo?
     @Published var recipe = Recipe()
@@ -101,6 +102,13 @@ final class AppModel: ObservableObject {
         library.watch { [weak self] in
             Task { @MainActor in self?.reload() }
         }
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshCards(auto: name == NSWorkspace.didMountNotification) }
+            }
+        }
+        refreshCards(auto: true)
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard let self else { return event }
             let handled = MainActor.assumeIsolated { self.handleKey(event) }
@@ -127,6 +135,48 @@ final class AppModel: ObservableObject {
                 }
                 self.selected = self.selected.intersection(ids)
                 if self.selected.isEmpty, let primary = self.selection { self.selected = [primary] }
+            }
+        }
+    }
+
+    func refreshCards(auto: Bool) {
+        let lib = library
+        Task.detached(priority: .utility) {
+            let found = lib.cards()
+            await MainActor.run {
+                self.cards = found
+                guard auto else { return }
+                for card in found {
+                    let mark = UserDefaults.standard.double(forKey: "card." + card.key)
+                    guard mark > 0 else { continue }
+                    let fresh = card.days.flatMap { $0.files }.filter { url in
+                        let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                        return date.timeIntervalSince1970 > mark + 1
+                    }
+                    if !fresh.isEmpty { self.importFiles(fresh, from: card) }
+                }
+            }
+        }
+    }
+
+    func importDay(_ day: CardDay, from card: CameraCard) {
+        importFiles(day.files, from: card)
+    }
+
+    private func importFiles(_ files: [URL], from card: CameraCard) {
+        guard batch == nil, !files.isEmpty else { return }
+        batch = BatchProgress(label: "Importing from \(card.name)", done: 0, total: files.count)
+        let lib = library
+        Task.detached(priority: .userInitiated) {
+            let added = lib.importFromCard(files) { done in
+                Task { @MainActor in self.batch?.done = done }
+            }
+            await MainActor.run {
+                self.batch = nil
+                UserDefaults.standard.set(card.newest.timeIntervalSince1970, forKey: "card." + card.key)
+                self.say(added == 0 ? "Those photos were already imported." : "Imported \(added) photo\(added == 1 ? "" : "s") from \(card.name).", error: false)
+                if self.shelf != .toProcess { self.switchShelf(.toProcess) } else { self.reload() }
+                self.refreshCards(auto: false)
             }
         }
     }

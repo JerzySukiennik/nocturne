@@ -2,9 +2,10 @@
 
 A personal, AI-first photo editor for macOS. Native Swift, Core Image and Metal, built for an Intel MacBook Pro and a Nikon D80.
 
-## What works (0.5)
+## What works (0.6)
 
 - Library on two plain folders: `~/Pictures/Nocturne/To Process` and `~/Pictures/Nocturne/Processed`. Drop photos into the folder or onto the window and they appear on their own.
+- Camera import: a connected camera or card with a DCIM folder shows up in the sidebar with its photos grouped by day. Import a day with one click; after that, newer photos from the same card are imported on their own when it is connected. Nothing is deleted from the card.
 - RAW (through Apple's RAW engine) and regular formats, decoded into a linear Display P3 working space.
 - Editor where the photo fills the window. Tone steps: Light, Color, Grade, Color Splash, Match.
 - Light Stage: Lamp steps are virtual lights placed by clicking or dragging on the photo. A depth map gives every pixel a height, normals come from that relief, and shadows are ray-marched through it. Depth moves the lamp toward the camera or back behind things, where it turns into a rim light. Power, reach, warmth, shadow strength and scene dimming are sliders; click the Lamp tool again for a second lamp.

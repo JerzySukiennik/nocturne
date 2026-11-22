@@ -97,6 +97,9 @@ private struct Sidebar: View {
             ForEach(Shelf.allCases, id: \.self) { shelf in
                 ShelfRow(shelf: shelf)
             }
+            ForEach(model.cards) { card in
+                CardSection(card: card)
+            }
             Spacer()
             Button {
                 model.showInFinder(nil)
@@ -113,6 +116,77 @@ private struct Sidebar: View {
         .padding(.vertical, 14)
         .frame(width: 190)
         .background(Theme.panel)
+    }
+}
+
+private struct CardSection: View {
+    @EnvironmentObject var model: AppModel
+    let card: CameraCard
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("CAMERA")
+                .font(.system(size: 10.5, weight: .semibold))
+                .kerning(0.7)
+                .foregroundStyle(Theme.faint)
+                .padding(.horizontal, 8)
+                .padding(.top, 14)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(card.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.text)
+                Text("\(card.total) photos on the card").font(.system(size: 11)).foregroundStyle(Theme.dim)
+                ForEach(card.days.prefix(4)) { day in
+                    CardDayRow(card: card, day: day)
+                }
+                if card.days.count > 4 {
+                    Text("and \(card.days.count - 4) older days").font(.system(size: 11)).foregroundStyle(Theme.faint)
+                }
+            }
+            .padding(10)
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.line, lineWidth: 1))
+        }
+    }
+}
+
+private struct CardDayRow: View {
+    @EnvironmentObject var model: AppModel
+    let card: CameraCard
+    let day: CardDay
+
+    var body: some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(label).font(.system(size: 11.5)).foregroundStyle(Theme.text)
+                Text(day.fresh == 0 ? "all imported" : "\(day.fresh) new of \(day.files.count)")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.faint)
+            }
+            Spacer(minLength: 2)
+            if day.fresh > 0 {
+                Button {
+                    model.importDay(day, from: card)
+                } label: {
+                    Text("Import")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Theme.accent.opacity(0.16), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(model.batch != nil)
+                .accessibilityLabel("Import \(label)")
+            }
+        }
+    }
+
+    private var label: String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(day.day) { return "Today" }
+        if calendar.isDateInYesterday(day.day) { return "Yesterday" }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_GB")
+        f.dateFormat = "d MMM yyyy"
+        return f.string(from: day.day)
     }
 }
 
