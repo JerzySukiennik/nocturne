@@ -2,10 +2,13 @@
 
 A personal, AI-first photo editor for macOS. Native Swift, Core Image and Metal, built for an Intel MacBook Pro and a Nikon D80.
 
-## What works (0.6)
+## What works (0.7)
 
 - Library on two plain folders: `~/Pictures/Nocturne/To Process` and `~/Pictures/Nocturne/Processed`. Drop photos into the folder or onto the window and they appear on their own.
 - Camera import: a connected camera or card with a DCIM folder shows up in the sidebar with its photos grouped by day. Import a day with one click; after that, newer photos from the same card are imported on their own when it is connected. Nothing is deleted from the card.
+- Tethered shooting: with the camera's USB mode set to PTP the Mac fires the shutter itself (a raw PTP InitiateCapture, so the camera's answer is readable: no card, busy, could not focus). Set a number of frames and an interval, press Start series, and every frame is pulled into To Process as it is taken. Older photos on the camera can be imported by day in this mode too.
+- Series and stacks: frames shot within a few seconds with the same lens setting are recognised as a series, badged in the grid and offered for stacking in the bottom bar. Average aligns the frames and averages them (less noise), Lighten keeps the brightest value (star trails, light painting), Long exposure averages without aligning (silky water). The result is a 16-bit TIFF in To Process that edits like any photo. Any two or more selected photos can be stacked the same way.
+- Field Guide for the Nikon D80: step by step from camera settings to the finished stack for stars, the Moon, star trails and silky water. Night mode tints the whole window deep red for work in the dark.
 - RAW (through Apple's RAW engine) and regular formats, decoded into a linear Display P3 working space.
 - Editor where the photo fills the window. Tone steps: Light, Color, Grade, Color Splash, Match.
 - Light Stage: Lamp steps are virtual lights placed by clicking or dragging on the photo. A depth map gives every pixel a height, normals come from that relief, and shadows are ray-marched through it. Depth moves the lamp toward the camera or back behind things, where it turns into a rim light. Power, reach, warmth, shadow strength and scene dimming are sliders; click the Lamp tool again for a second lamp.
@@ -56,4 +59,4 @@ The Gemini key is read from `~/Library/Application Support/Nocturne/.env` (`GEMI
 
 ## Planned
 
-Stacking (stars, Moon, star trails, focus stacking, long exposure from a series) with a Nikon D80 field guide and tethered shooting, denoise, crop and curves.
+Star alignment and separate sky and ground stacking, lucky imaging for the Moon, focus stacking, denoise, crop and curves.

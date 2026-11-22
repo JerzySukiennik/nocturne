@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
     let masker: Masker
     let thumbs: ThumbnailStore
     let inpainter: Inpainter
+    let tether: CameraLink
     let ai = Gemini()
 
     @Published var shelf: Shelf = .toProcess
@@ -44,6 +45,16 @@ final class AppModel: ObservableObject {
     @Published var scanned = false
     @Published var batch: BatchProgress?
     @Published var cards: [CameraCard] = []
+    @Published var series: [PhotoSeries] = []
+    @Published var tetherName: String?
+    @Published var tetherReady = false
+    @Published var tetherDays: [TetherDay] = []
+    @Published var tetherTotal = 0
+    @Published var seriesFrames = 8
+    @Published var seriesGap = 3
+    @Published var seriesRun: BatchProgress?
+    @Published var night = false
+    @Published var guideOpen = false
 
     @Published var current: Photo?
     @Published var recipe = Recipe()
@@ -81,6 +92,8 @@ final class AppModel: ObservableObject {
     private var previewRecipe: Recipe?
     private var copiedLook: Recipe?
     private var stroke: [CGPoint] = []
+    private var seriesLastShot = Date()
+    private var seriesWatch: DispatchWorkItem?
     private var framePreview: CIImage?
     private var previewWork: DispatchWorkItem?
     private var undoStack: [Recipe] = []
@@ -96,7 +109,15 @@ final class AppModel: ObservableObject {
         masker = Masker(engine: engine)
         thumbs = ThumbnailStore(engine: engine, library: library, masker: masker)
         inpainter = Inpainter(engine: engine)
+        tether = CameraLink(library: library)
         try? library.prepare()
+        tether.onChange = { [weak self] in
+            MainActor.assumeIsolated { self?.syncTether() }
+        }
+        tether.onFrame = { [weak self] url in
+            MainActor.assumeIsolated { self?.frameArrived(url) }
+        }
+        tether.start()
         presets = library.presets()
         reload()
         library.watch { [weak self] in
@@ -127,6 +148,7 @@ final class AppModel: ObservableObject {
             await MainActor.run {
                 guard self.shelf == shelf else { return }
                 self.photos = list
+                self.series = shelf == .toProcess ? Library.findSeries(in: list) : []
                 self.counts = result
                 self.scanned = true
                 let ids = Set(list.map { $0.id })
@@ -135,6 +157,134 @@ final class AppModel: ObservableObject {
                 }
                 self.selected = self.selected.intersection(ids)
                 if self.selected.isEmpty, let primary = self.selection { self.selected = [primary] }
+            }
+        }
+    }
+
+    private func syncTether() {
+        tetherName = tether.name
+        tetherReady = tether.ready
+        tetherDays = tether.days
+        tetherTotal = tether.total
+        if tetherName == nil, seriesRun != nil {
+            seriesRun = nil
+            say("The camera was disconnected.", error: true)
+        }
+    }
+
+    func startSeries() {
+        guard tetherReady, seriesRun == nil else { return }
+        seriesRun = BatchProgress(label: "Series", done: 0, total: seriesFrames)
+        fireSeries()
+    }
+
+    func stopSeries() {
+        seriesWatch?.cancel()
+        seriesRun = nil
+    }
+
+    private func fireSeries() {
+        seriesLastShot = Date()
+        tether.capture { [weak self] message in
+            MainActor.assumeIsolated {
+                guard let self, self.seriesRun != nil else { return }
+                if let message {
+                    self.seriesRun = nil
+                    self.say(message, error: true)
+                    return
+                }
+                self.seriesWatch?.cancel()
+                let watch = DispatchWorkItem { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self, self.seriesRun != nil else { return }
+                        self.seriesRun = nil
+                        self.say("No frame arrived from the camera. The series was stopped.", error: true)
+                    }
+                }
+                self.seriesWatch = watch
+                DispatchQueue.main.asyncAfter(deadline: .now() + 75, execute: watch)
+            }
+        }
+    }
+
+    private func frameArrived(_ url: URL) {
+        reload()
+        guard var run = seriesRun else { return }
+        seriesWatch?.cancel()
+        run.done += 1
+        if run.done >= run.total {
+            seriesRun = nil
+            say("Series done: \(run.total) frame\(run.total == 1 ? "" : "s") in To Process.", error: false)
+            return
+        }
+        seriesRun = run
+        let wait = max(0.4, Double(seriesGap) - Date().timeIntervalSince(seriesLastShot))
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.seriesRun != nil else { return }
+                self.fireSeries()
+            }
+        }
+    }
+
+    func importTetherDay(_ day: TetherDay) {
+        guard batch == nil, day.fresh > 0 else { return }
+        let name = tetherName ?? "camera"
+        batch = BatchProgress(label: "Importing from \(name)", done: 0, total: day.fresh)
+        tether.importDay(day.day) { [weak self] added in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.batch = nil
+                self.say("Imported \(added) photo\(added == 1 ? "" : "s") from \(name).", error: false)
+                if self.shelf != .toProcess { self.switchShelf(.toProcess) } else { self.reload() }
+            }
+        }
+    }
+
+    var stackTargets: [Photo]? {
+        guard shelf == .toProcess, current == nil else { return nil }
+        if selected.count >= 2 {
+            return photos.filter { selected.contains($0.id) }.sorted { ($0.sortDate, $0.name) < ($1.sortDate, $1.name) }
+        }
+        return (series.first { $0.photos.contains { $0.id == selection } } ?? series.first)?.photos
+    }
+
+    var stackLabel: String {
+        let n = stackTargets?.count ?? 0
+        return selected.count >= 2 ? "Stack \(n) selected:" : "Series of \(n) frames. Stack:"
+    }
+
+    func seriesSize(of photo: Photo) -> Int? {
+        series.first { $0.photos.contains { $0.id == photo.id } }?.count
+    }
+
+    func buildStack(_ mode: StackMode) {
+        guard let frames = stackTargets, frames.count >= 2, batch == nil else { return }
+        batch = BatchProgress(label: "Stacking (\(mode.title))", done: 0, total: frames.count)
+        let urls = frames.map { $0.url }
+        let target = library.stackURL(first: frames[0], mode: mode, count: frames.count)
+        let engine = engine
+        Task.detached(priority: .userInitiated) {
+            var failure: String?
+            do {
+                let result = try engine.stack(urls, mode: mode) { done in
+                    Task { @MainActor in self.batch?.done = done }
+                }
+                try engine.writeTIFF(result.image, to: target, properties: result.properties)
+            } catch {
+                failure = "Stacking failed."
+            }
+            let message = failure
+            await MainActor.run {
+                self.batch = nil
+                if let message {
+                    self.say(message, error: true)
+                    return
+                }
+                self.selection = target.path
+                self.selected = [target.path]
+                self.reload()
+                self.say("Stack ready: \(target.lastPathComponent)", error: false)
             }
         }
     }

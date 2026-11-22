@@ -159,6 +159,10 @@ enum KernelSource {
         return float4(color.rgb * lit, 1.0);
     }
 
+    [[stitchable]] float4 nocBlend(coreimage::sample_t a, coreimage::sample_t b, float t) {
+        return float4(mix(a.rgb, b.rgb, t), 1.0);
+    }
+
     [[stitchable]] float4 nocMatch(coreimage::sample_t s, float4 luma, float4 ss, float4 st, float4 ms, float4 mt, float4 hs, float4 ht, float amount) {
         const float3 wgt = float3(0.2290, 0.6917, 0.0793);
         float3 c = max(s.rgb, 0.0);
@@ -208,6 +212,7 @@ final class Kernels {
     let grain: CIColorKernel
     let match: CIColorKernel
     let splash: CIColorKernel
+    let blend: CIColorKernel
     let high: CIColorKernel
     let glow: CIColorKernel
     let fringe: CIColorKernel
@@ -232,6 +237,7 @@ final class Kernels {
         grain = try pick("nocGrain")
         match = try pick("nocMatch")
         splash = try pick("nocSplash")
+        blend = try pick("nocBlend")
         high = try pick("nocHigh")
         glow = try pick("nocGlow")
         fringe = try pick("nocFringe")

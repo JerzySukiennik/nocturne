@@ -35,6 +35,18 @@ extension Library {
         return false
     }
 
+    public func isImported(name: String, size: Int) -> Bool {
+        let fm = FileManager.default
+        let spots = [
+            folder(.toProcess).appendingPathComponent(name),
+            folder(.processed).appendingPathComponent("Originals").appendingPathComponent(name)
+        ]
+        for spot in spots where fm.fileExists(atPath: spot.path) {
+            if (try? spot.resourceValues(forKeys: [.fileSizeKey]))?.fileSize == size { return true }
+        }
+        return false
+    }
+
     public func cards() -> [CameraCard] {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [.volumeNameKey, .volumeUUIDStringKey, .volumeIsInternalKey]

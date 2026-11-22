@@ -200,6 +200,20 @@ case "frame":
         print(" ", cg.width, "x", cg.height)
     }
 
+case "stack":
+    guard args.count >= 5, let mode = StackMode(rawValue: args[1]) else { fail("stack average|lighten|longExposure <out.tif> <frames...>") }
+    let urls = args[3...].map { URL(fileURLWithPath: $0) }
+    let result = try timed("stack \(mode.rawValue) of \(urls.count)") { try engine.stack(Array(urls), mode: mode) { _ in } }
+    try engine.writeTIFF(result.image, to: URL(fileURLWithPath: args[2]), properties: result.properties)
+    print("size", result.image.width, "x", result.image.height, "used", result.used)
+
+case "series":
+    guard args.count >= 2 else { fail("series <folder>") }
+    let lib = Library(root: URL(fileURLWithPath: args[1]))
+    for s in Library.findSeries(in: lib.scan(.toProcess)) {
+        print("series of", s.count, s.photos.first?.name ?? "", "to", s.photos.last?.name ?? "")
+    }
+
 default:
     fail("unknown command \(command)")
 }

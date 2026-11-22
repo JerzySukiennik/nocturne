@@ -56,6 +56,11 @@ struct NocturneApp: App {
                 Button("Back to Library") { model.closeEditor() }
                     .disabled(model.current == nil)
                 Button("Show Folder in Finder") { model.showInFinder(nil) }
+                Divider()
+                Button("Field Guide") { model.guideOpen.toggle() }
+                    .disabled(model.current != nil)
+                Button(model.night ? "Turn Night Mode Off" : "Night Mode") { model.night.toggle() }
+                    .keyboardShortcut("n", modifiers: [.command, .option])
             }
         }
     }
@@ -73,6 +78,11 @@ struct RootView: View {
             }
         }
         .background(Color.black)
+        .overlay {
+            if model.night {
+                NightTint().allowsHitTesting(false)
+            }
+        }
         .ignoresSafeArea()
     }
 }

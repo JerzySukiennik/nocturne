@@ -65,21 +65,23 @@ final class Probe: NSObject, ICDeviceBrowserDelegate, ICCameraDeviceDelegate, IC
         }
         if shoot, !shot, device.capabilities.contains(ICDeviceCapability.cameraDeviceCanTakePicture.rawValue) {
             shot = true
-            shotAt = Date()
-            print("firing the shutter…")
-            if CommandLine.arguments.contains("ptp") {
-                var bytes = [UInt8]()
-                func put32(_ v: UInt32) { for i in 0..<4 { bytes.append(UInt8((v >> (8 * UInt32(i))) & 0xff)) } }
-                func put16(_ v: UInt16) { bytes.append(UInt8(v & 0xff)); bytes.append(UInt8(v >> 8)) }
-                put32(20); put16(1); put16(0x100E); put32(1); put32(0); put32(0)
-                device.requestSendPTPCommand(Data(bytes), outData: nil) { _, response, error in
-                    let r = [UInt8](response)
-                    let code = r.count >= 8 ? UInt16(r[6]) | (UInt16(r[7]) << 8) : 0
-                    print(String(format: "PTP InitiateCapture response: 0x%04X", code), error?.localizedDescription ?? "")
-                }
-            } else {
-                device.requestTakePicture()
-            }
+            fire(device)
+        }
+    }
+
+    var remaining = Int(CommandLine.arguments.last ?? "") ?? 1
+
+    func fire(_ device: ICCameraDevice) {
+        shotAt = Date()
+        print("firing the shutter…")
+        var bytes = [UInt8]()
+        func put32(_ v: UInt32) { for i in 0..<4 { bytes.append(UInt8((v >> (8 * UInt32(i))) & 0xff)) } }
+        func put16(_ v: UInt16) { bytes.append(UInt8(v & 0xff)); bytes.append(UInt8(v >> 8)) }
+        put32(20); put16(1); put16(0x100E); put32(1); put32(0); put32(0)
+        device.requestSendPTPCommand(Data(bytes), outData: nil) { _, response, error in
+            let r = [UInt8](response)
+            let code = r.count >= 8 ? UInt16(r[6]) | (UInt16(r[7]) << 8) : 0
+            print(String(format: "PTP InitiateCapture response: 0x%04X", code), error?.localizedDescription ?? "")
         }
     }
 
@@ -95,7 +97,10 @@ final class Probe: NSObject, ICDeviceBrowserDelegate, ICCameraDeviceDelegate, IC
 
     @objc func didDownload(_ file: ICCameraFile, error: Error?, options: [String: Any], contextInfo: UnsafeMutableRawPointer?) {
         print("downloaded:", file.name ?? "?", error?.localizedDescription ?? "ok", options[ICDownloadOption.savedFilename.rawValue] ?? "", String(format: "%.1fs after the shot", Date().timeIntervalSince(shotAt)))
-        exit(0)
+        remaining -= 1
+        if remaining <= 0 { exit(0) }
+        guard let camera = file.device as? ICCameraDevice else { exit(0) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.fire(camera) }
     }
 
     func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {}
@@ -114,8 +119,8 @@ final class Probe: NSObject, ICDeviceBrowserDelegate, ICCameraDeviceDelegate, IC
 
 let args = Array(CommandLine.arguments.dropFirst())
 let wantsShot = args.contains("shoot")
-let dir = URL(fileURLWithPath: args.first { $0 != "shoot" && $0 != "ptp" } ?? NSTemporaryDirectory())
+let dir = URL(fileURLWithPath: args.first { $0.hasPrefix("/") } ?? NSTemporaryDirectory())
 let probe = Probe(shoot: wantsShot, outDir: dir)
 probe.start()
-RunLoop.main.run(until: Date().addingTimeInterval(wantsShot ? 60 : 60))
+RunLoop.main.run(until: Date().addingTimeInterval(wantsShot ? 120 : 60))
 print("done")
