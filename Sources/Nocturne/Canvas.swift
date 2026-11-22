@@ -14,6 +14,11 @@ final class CanvasView: MTKView, MTKViewDelegate {
     var token = -1
     var zoomToken = 0
     var onPoint: ((CGPoint, Int) -> Bool)?
+    var bottomInset: CGFloat = 0 {
+        didSet {
+            if oldValue != bottomInset { needsDisplay = true }
+        }
+    }
     private var pointing = false
 
     var image: CIImage? {
@@ -48,14 +53,16 @@ final class CanvasView: MTKView, MTKViewDelegate {
     }
 
     private func layout(_ size: CGSize) -> (scale: CGFloat, tx: CGFloat, ty: CGFloat, fit: CGFloat) {
-        let fit = min(size.width / max(extent.width, 1), size.height / max(extent.height, 1))
+        let inset = zoom > 0 ? 0 : bottomInset * (window?.backingScaleFactor ?? 2)
+        let room = max(size.height - inset, 1)
+        let fit = min(size.width / max(extent.width, 1), room / max(extent.height, 1))
         let s = zoom > 0 ? zoom : fit
         let w = extent.width * s
         let h = extent.height * s
         var tx = size.width / 2 - center.x * w
         var ty = size.height / 2 - center.y * h
         tx = w <= size.width ? (size.width - w) / 2 : min(0, max(size.width - w, tx))
-        ty = h <= size.height ? (size.height - h) / 2 : min(0, max(size.height - h, ty))
+        ty = h <= room ? inset + (room - h) / 2 : min(0, max(size.height - h, ty))
         return (s, tx, ty, fit)
     }
 
@@ -193,6 +200,7 @@ struct Canvas: NSViewRepresentable {
     }
 
     func updateNSView(_ view: CanvasView, context: Context) {
+        view.bottomInset = (model.exportDraft != nil && model.frameStyle != .plain) ? 232 : 0
         if view.token != model.renderToken {
             view.token = model.renderToken
             view.image = model.display

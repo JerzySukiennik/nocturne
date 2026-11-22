@@ -228,19 +228,27 @@ public final class Library: @unchecked Sendable {
         return count
     }
 
-    public func export(photo: Photo, recipe: Recipe, name: String, image: CIImage, properties: [CFString: Any], engine: Engine) throws -> URL {
+    public func export(photo: Photo, recipe: Recipe, name: String, image: CIImage, properties: [CFString: Any], engine: Engine,
+                       frame: FrameOptions = FrameOptions(), before: CIImage? = nil) throws -> URL {
         try prepare()
+        func write(to url: URL) throws {
+            if frame.style != .plain, let cg = engine.framed(after: image, before: before, options: frame) {
+                try engine.writeJPEG(cg, to: url, properties: properties)
+            } else {
+                try engine.export(image, to: url, properties: properties)
+            }
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if photo.shelf == .processed {
-            try engine.export(image, to: photo.url, properties: properties)
+            try write(to: photo.url)
             saveRecipe(recipe, for: photo)
             return photo.url
         }
         let clean = Library.cleanName(name)
         let base = clean.isEmpty ? photo.url.deletingPathExtension().lastPathComponent : clean
         let target = unique(folder(.processed).appendingPathComponent(base).appendingPathExtension("jpg"))
-        try engine.export(image, to: target, properties: properties)
+        try write(to: target)
         let kept = unique(originals.appendingPathComponent(photo.name))
         try fm.moveItem(at: photo.url, to: kept)
         for step in recipe.cleanupSteps {

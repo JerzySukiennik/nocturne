@@ -11,6 +11,8 @@ struct ExportDraft: Equatable {
     var touched: Bool
     var working: Bool
     var renamable: Bool
+    var device = ""
+    var settings = ""
 }
 
 struct Notice: Equatable {
@@ -64,6 +66,9 @@ final class AppModel: ObservableObject {
     @Published var cleanBusy = false
     @Published var cleanReady = false
     @Published var brush = 2.0
+    @Published var frameStyle = FrameStyle(rawValue: UserDefaults.standard.string(forKey: "frameStyle") ?? "") ?? .plain
+    @Published var frameDark = UserDefaults.standard.bool(forKey: "frameDark")
+    @Published var frameNote = UserDefaults.standard.string(forKey: "frameNote") ?? ""
 
     var columns = 5
     private(set) var display: CIImage?
@@ -75,6 +80,8 @@ final class AppModel: ObservableObject {
     private var previewRecipe: Recipe?
     private var copiedLook: Recipe?
     private var stroke: [CGPoint] = []
+    private var framePreview: CIImage?
+    private var previewWork: DispatchWorkItem?
     private var undoStack: [Recipe] = []
     private var redoStack: [Recipe] = []
     private var editStart: Recipe?
@@ -222,6 +229,7 @@ final class AppModel: ObservableObject {
         selectedStep = nil
         showOriginal = false
         exportDraft = nil
+        framePreview = nil
         presetsOpen = false
         prompt = ""
         source = nil
@@ -293,6 +301,7 @@ final class AppModel: ObservableObject {
         source = nil
         display = nil
         exportDraft = nil
+        framePreview = nil
         presetsOpen = false
         cleanupActive = false
         stroke = []
@@ -314,8 +323,77 @@ final class AppModel: ObservableObject {
         return "\(index + 1) / \(photos.count)"
     }
 
+    func setFrameStyle(_ style: FrameStyle) {
+        frameStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: "frameStyle")
+        updateFramePreview()
+    }
+
+    func setFrameDark(_ dark: Bool) {
+        frameDark = dark
+        UserDefaults.standard.set(dark, forKey: "frameDark")
+        updateFramePreview()
+    }
+
+    func setFrameNote(_ text: String) {
+        guard text != frameNote else { return }
+        frameNote = text
+        UserDefaults.standard.set(text, forKey: "frameNote")
+        updateFramePreview()
+    }
+
+    func setFrameDevice(_ text: String) {
+        guard exportDraft != nil, exportDraft?.device != text else { return }
+        exportDraft?.device = text
+        updateFramePreview()
+    }
+
+    private func frameOptions(device: String, settings: String) -> FrameOptions {
+        FrameOptions(style: frameStyle, dark: frameDark, device: device, settings: settings, note: frameNote)
+    }
+
+    func cancelExport() {
+        exportDraft = nil
+        framePreview = nil
+        previewWork?.cancel()
+        refresh()
+    }
+
+    func updateFramePreview() {
+        previewWork?.cancel()
+        guard let source, let draft = exportDraft, frameStyle != .plain else {
+            framePreview = nil
+            refresh()
+            return
+        }
+        let options = frameOptions(device: draft.device, settings: draft.settings)
+        let engine = engine
+        let masker = masker
+        let masks = masks
+        let recipe = recipe
+        let work = DispatchWorkItem { [weak self] in
+            Task.detached(priority: .userInitiated) {
+                let after = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: masks)
+                let cg = engine.framed(after: after, before: source.image, options: options, maxEdge: 2400)
+                await MainActor.run {
+                    guard let self, let now = self.exportDraft, self.frameStyle != .plain,
+                          self.frameOptions(device: now.device, settings: now.settings) == options else { return }
+                    self.framePreview = cg.map { CIImage(cgImage: $0) }
+                    self.refresh()
+                }
+            }
+        }
+        previewWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
+
     func refresh() {
         guard let source else { return }
+        if exportDraft != nil, frameStyle != .plain, !showOriginal, let framePreview {
+            display = framePreview
+            renderToken += 1
+            return
+        }
         if showOriginal {
             display = source.image
         } else {
@@ -803,6 +881,9 @@ final class AppModel: ObservableObject {
         let engine = engine
         let masker = masker
         let ai = ai
+        let style = frameStyle
+        let dark = frameDark
+        let note = frameNote
         Task.detached(priority: .userInitiated) {
             var failed = 0
             for (i, photo) in list.enumerated() {
@@ -816,7 +897,9 @@ final class AppModel: ObservableObject {
                     if let preview = engine.jpegData(image, maxEdge: 512, quality: 0.75), let suggestion = try? await ai.suggestName(preview: preview) {
                         name = suggestion
                     }
-                    _ = try lib.export(photo: photo, recipe: recipe, name: name, image: image, properties: source.properties, engine: engine)
+                    let frame = FrameOptions(style: style, dark: dark, device: photo.meta.deviceName, settings: photo.meta.settingsLine, note: note)
+                    _ = try lib.export(photo: photo, recipe: recipe, name: name, image: image, properties: source.properties,
+                                       engine: engine, frame: frame, before: source.image)
                 } catch {
                     failed += 1
                 }
@@ -836,11 +919,17 @@ final class AppModel: ObservableObject {
         guard let photo = current, let source, exportDraft == nil else { return }
         presetsOpen = false
         let base = photo.url.deletingPathExtension().lastPathComponent
+        cleanupActive = false
+        stroke = []
         if photo.shelf == .processed {
-            exportDraft = ExportDraft(name: base, suggesting: false, touched: true, working: false, renamable: false)
+            exportDraft = ExportDraft(name: base, suggesting: false, touched: true, working: false, renamable: false,
+                                      device: photo.meta.deviceName, settings: photo.meta.settingsLine)
+            updateFramePreview()
             return
         }
-        exportDraft = ExportDraft(name: base, suggesting: true, touched: false, working: false, renamable: true)
+        exportDraft = ExportDraft(name: base, suggesting: true, touched: false, working: false, renamable: true,
+                                  device: photo.meta.deviceName, settings: photo.meta.settingsLine)
+        updateFramePreview()
         let engine = engine
         let masker = masker
         let masks = masks
@@ -872,16 +961,19 @@ final class AppModel: ObservableObject {
         let masker = masker
         let masks = masks
         let index = photos.firstIndex { $0.id == photo.id }
+        let options = frameOptions(device: draft.device, settings: draft.settings)
         Task {
             let result: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
                 Result {
                     let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: masks)
-                    return try lib.export(photo: photo, recipe: recipe, name: name, image: image, properties: source.properties, engine: engine)
+                    return try lib.export(photo: photo, recipe: recipe, name: name, image: image, properties: source.properties,
+                                          engine: engine, frame: options, before: source.image)
                 }
             }.value
             switch result {
             case .success(let url):
                 self.exportDraft = nil
+                self.framePreview = nil
                 self.dirty = false
                 var next: Photo?
                 if photo.shelf == .toProcess, let index {
@@ -924,7 +1016,7 @@ final class AppModel: ObservableObject {
         if typing {
             if e.keyCode == 53 {
                 (e.window ?? NSApp.keyWindow)?.makeFirstResponder(nil)
-                if exportDraft != nil { exportDraft = nil }
+                if exportDraft != nil { cancelExport() }
                 return true
             }
             return false
@@ -938,7 +1030,7 @@ final class AppModel: ObservableObject {
             switch e.keyCode {
             case 53:
                 if exportDraft != nil {
-                    exportDraft = nil
+                    cancelExport()
                 } else if cleanupActive {
                     toggleCleanup()
                 } else if presetsOpen {

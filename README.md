@@ -2,7 +2,7 @@
 
 A personal, AI-first photo editor for macOS. Native Swift, Core Image and Metal, built for an Intel MacBook Pro and a Nikon D80.
 
-## What works (0.4)
+## What works (0.5)
 
 - Library on two plain folders: `~/Pictures/Nocturne/To Process` and `~/Pictures/Nocturne/Processed`. Drop photos into the folder or onto the window and they appear on their own.
 - RAW (through Apple's RAW engine) and regular formats, decoded into a linear Display P3 working space.
@@ -16,6 +16,7 @@ A personal, AI-first photo editor for macOS. Native Swift, Core Image and Metal,
 - Presets: save a look by name, hover to preview it, click to apply. Stored as JSON in `~/Pictures/Nocturne/Presets`.
 - Batch: Cmd-click or Shift-click photos in the library, then paste a copied look, apply a preset or export them all (right-click or the Photo menu). Masks and matches are recomputed for every photo.
 - Non-destructive: the recipe is a small JSON saved beside the photo after every change. Originals are never modified.
+- Export styles: Plain, Frame (a white or black border with a "Shot on" caption from EXIF, camera settings for real cameras, and an optional line of your own text) and Before / After (the original above the edit in one framed image). The frame is previewed live on the canvas and the last choice is remembered, also for batch export.
 - Export writes a full-size JPEG with EXIF into `Processed`, suggests a descriptive Polish file name, and keeps the original in `Processed/Originals` so the project can be reopened and edited further.
 
 ## Keys

@@ -176,6 +176,30 @@ case "clean":
     let moved = both.transformed(by: CGAffineTransform(translationX: -both.extent.minX, y: -both.extent.minY))
     try engine.export(engine.scaled(moved, maxEdge: 1500), to: URL(fileURLWithPath: args[2]), properties: [:])
 
+case "frame":
+    guard args.count >= 3 else { fail("frame <in> <outdir>") }
+    let url = URL(fileURLWithPath: args[1])
+    let source = try engine.load(url)
+    let meta = PhotoMeta.read(url)
+    print("device:", meta.deviceName, "| settings:", meta.settingsLine)
+    let look = Recipe(steps: [
+        Step(kind: .light, params: ["exposure": -0.2, "contrast": 20, "shadows": 20]),
+        Step(kind: .color, params: ["temperature": 25, "vibrance": 20]),
+        Step(kind: .mist, params: ["amount": 25])
+    ])
+    let after = engine.render(source.image, recipe: look)
+    let device = meta.deviceName.isEmpty ? "iPhone XR" : meta.deviceName
+    let sets: [(String, FrameOptions)] = [
+        ("frame-white", FrameOptions(style: .frame, dark: false, device: device, settings: meta.settingsLine, note: "")),
+        ("frame-black", FrameOptions(style: .frame, dark: true, device: device, settings: meta.settingsLine, note: "Gzowo, November 2026")),
+        ("compare", FrameOptions(style: .compare, dark: false, device: device, settings: meta.settingsLine, note: "Gzowo, November 2026"))
+    ]
+    for (label, options) in sets {
+        guard let cg = timed(label, { engine.framed(after: after, before: source.image, options: options, maxEdge: 1500) }) else { fail("no frame") }
+        try engine.writeJPEG(cg, to: URL(fileURLWithPath: args[2]).appendingPathComponent("\(label).jpg"), properties: source.properties)
+        print(" ", cg.width, "x", cg.height)
+    }
+
 default:
     fail("unknown command \(command)")
 }

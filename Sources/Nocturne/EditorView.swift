@@ -609,43 +609,62 @@ private struct ExportCard: View {
 
     var body: some View {
         let draft: ExportDraft = model.exportDraft ?? ExportDraft(name: "", suggesting: false, touched: false, working: false, renamable: false)
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(draft.suggesting ? "Finding a name…" : (draft.renamable ? "Export to Processed as" : "Export again over"))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.white.opacity(0.55))
-                TextField("Name", text: nameBinding)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14))
-                    .disabled(!draft.renamable || draft.working)
-                    .onSubmit { model.confirmExport() }
+        let framed: Bool = model.frameStyle != .plain
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                ForEach(FrameStyle.allCases, id: \.self) { style in
+                    StyleChip(title: style.title, active: model.frameStyle == style) { model.setFrameStyle(style) }
+                }
+                Spacer()
+                if framed {
+                    StyleChip(title: "White", active: !model.frameDark) { model.setFrameDark(false) }
+                    StyleChip(title: "Black", active: model.frameDark) { model.setFrameDark(true) }
+                }
             }
-            if draft.working { ProgressView().controlSize(.small) }
-            Button {
-                model.exportDraft = nil
-            } label: {
-                Text("Cancel")
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+            if framed {
+                HStack(spacing: 10) {
+                    LabeledField(label: "Shot on", prompt: "Device", text: deviceBinding)
+                    LabeledField(label: "Your text", prompt: "Optional", text: noteBinding)
+                }
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.white.opacity(0.7))
-            Button {
-                model.confirmExport()
-            } label: {
-                Text("Export")
-                    .fontWeight(.semibold)
-                    .foregroundStyle(Color(white: 0.08))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(Theme.accent, in: Capsule())
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(draft.suggesting ? "Finding a name…" : (draft.renamable ? "Export to Processed as" : "Export again over"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.white.opacity(0.55))
+                    TextField("Name", text: nameBinding)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14))
+                        .disabled(!draft.renamable || draft.working)
+                        .onSubmit { model.confirmExport() }
+                }
+                if draft.working { ProgressView().controlSize(.small) }
+                Button {
+                    model.cancelExport()
+                } label: {
+                    Text("Cancel")
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.white.opacity(0.7))
+                Button {
+                    model.confirmExport()
+                } label: {
+                    Text("Export")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Color(white: 0.08))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(Theme.accent, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.working)
             }
-            .buttonStyle(.plain)
-            .disabled(draft.working)
         }
         .font(.system(size: 13))
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
         .frame(width: 580)
         .glass(RoundedRectangle(cornerRadius: 16))
     }
@@ -660,5 +679,54 @@ private struct ExportCard: View {
                 model.exportDraft = draft
             }
         )
+    }
+
+    private var deviceBinding: Binding<String> {
+        Binding(get: { model.exportDraft?.device ?? "" }, set: { model.setFrameDevice($0) })
+    }
+
+    private var noteBinding: Binding<String> {
+        Binding(get: { model.frameNote }, set: { model.setFrameNote($0) })
+    }
+}
+
+private struct StyleChip: View {
+    let title: String
+    let active: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? Color(white: 0.08) : Color.white.opacity(0.8))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 4)
+                .background(active ? Theme.accent : Color.white.opacity(0.1), in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+}
+
+private struct LabeledField: View {
+    let label: String
+    let prompt: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.white.opacity(0.55))
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.07), in: ConcentricRectangle())
     }
 }
