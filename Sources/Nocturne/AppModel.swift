@@ -118,6 +118,9 @@ final class AppModel: ObservableObject {
             MainActor.assumeIsolated { self?.frameArrived(url) }
         }
         tether.start()
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tether.stop() }
+        }
         presets = library.presets()
         reload()
         library.watch { [weak self] in

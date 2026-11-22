@@ -39,10 +39,15 @@ public final class CameraLink: NSObject, ICDeviceBrowserDelegate, ICCameraDevice
         browser.start()
     }
 
+    public func stop() {
+        camera?.requestCloseSession()
+        browser.stop()
+    }
+
     public static func message(for code: UInt16) -> String? {
         switch code {
         case 0x2001: return nil
-        case 0x2013: return "There is no memory card in the camera."
+        case 0x2013: return "The camera cannot reach its memory card. Turn the camera off and on, then try again."
         case 0x2019: return "The camera is busy. Try again in a moment."
         case 0x200C: return "The memory card is full."
         case 0xA002: return "The camera could not focus. Switch to manual focus or aim at something with contrast."

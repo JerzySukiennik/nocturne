@@ -61,7 +61,9 @@ final class Probe: NSObject, ICDeviceBrowserDelegate, ICCameraDeviceDelegate, IC
         known = Set(files.compactMap { $0.name })
         if !shoot {
             print("done")
-            exit(0)
+            device.requestCloseSession()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { exit(0) }
+            return
         }
         if shoot, !shot, device.capabilities.contains(ICDeviceCapability.cameraDeviceCanTakePicture.rawValue) {
             shot = true
@@ -98,8 +100,12 @@ final class Probe: NSObject, ICDeviceBrowserDelegate, ICCameraDeviceDelegate, IC
     @objc func didDownload(_ file: ICCameraFile, error: Error?, options: [String: Any], contextInfo: UnsafeMutableRawPointer?) {
         print("downloaded:", file.name ?? "?", error?.localizedDescription ?? "ok", options[ICDownloadOption.savedFilename.rawValue] ?? "", String(format: "%.1fs after the shot", Date().timeIntervalSince(shotAt)))
         remaining -= 1
-        if remaining <= 0 { exit(0) }
         guard let camera = file.device as? ICCameraDevice else { exit(0) }
+        if remaining <= 0 {
+            camera.requestCloseSession()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { exit(0) }
+            return
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.fire(camera) }
     }
 
