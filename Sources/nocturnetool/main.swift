@@ -53,8 +53,10 @@ case "describe":
     let source = try engine.load(URL(fileURLWithPath: args[1]))
     guard let preview = engine.jpegData(source.image, maxEdge: 768, quality: 0.8) else { fail("no preview") }
     let start = Date()
-    let answer = try await Gemini().describeLook(prompt: args[2], preview: preview, previous: [])
-    print(String(format: "answer %.1fs", Date().timeIntervalSince(start)), answer.note)
+    let provider = AIProvider(rawValue: ProcessInfo.processInfo.environment["NOCTURNE_AI"] ?? "") ?? .opus
+    let answer = try await Assistant().describeLook(prompt: args[2], preview: preview, previous: [], provider: provider)
+    print(String(format: "answer %.1fs", Date().timeIntervalSince(start)), "via", answer.via, "|", answer.note)
+    if let u = answer.usage { print(String(format: "usage: %d in, %d out, $%.5f", u.inputTokens, u.outputTokens, u.dollars), u.model) }
     for step in answer.steps { print(" ", step.kind.rawValue, step.mask?.rawValue ?? "all", step.name, step.params) }
     if args.count > 3 {
         let recipe = Recipe(steps: answer.steps)
@@ -68,7 +70,8 @@ case "name":
     guard args.count >= 2 else { fail("name <in>") }
     let source = try engine.load(URL(fileURLWithPath: args[1]))
     guard let preview = engine.jpegData(source.image, maxEdge: 512, quality: 0.75) else { fail("no preview") }
-    print(try await Gemini().suggestName(preview: preview))
+    let provider = AIProvider(rawValue: ProcessInfo.processInfo.environment["NOCTURNE_AI"] ?? "") ?? .opus
+    print(try await Assistant().suggestName(preview: preview, provider: provider))
 
 case "bench":
     guard args.count >= 2 else { fail("bench <in>") }

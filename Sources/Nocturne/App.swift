@@ -57,6 +57,11 @@ struct NocturneApp: App {
                     .disabled(model.current == nil)
                 Button("Show Folder in Finder") { model.showInFinder(nil) }
                 Divider()
+                Menu("AI Model") {
+                    ForEach(AIProvider.allCases, id: \.self) { provider in
+                        Button((model.aiProvider == provider ? "✓ " : "   ") + provider.title) { model.setProvider(provider) }
+                    }
+                }
                 Button("Field Guide") { model.guideOpen.toggle() }
                     .disabled(model.current != nil)
                 Button(model.night ? "Turn Night Mode Off" : "Night Mode") { model.night.toggle() }

@@ -34,7 +34,7 @@ final class AppModel: ObservableObject {
     let thumbs: ThumbnailStore
     let inpainter: Inpainter
     let tether: CameraLink
-    let ai = Gemini()
+    let ai = Assistant()
 
     @Published var shelf: Shelf = .toProcess
     @Published var photos: [Photo] = []
@@ -53,6 +53,7 @@ final class AppModel: ObservableObject {
     @Published var seriesFrames = 8
     @Published var seriesGap = 3
     @Published var seriesRun: BatchProgress?
+    @Published var aiProvider = AIProvider(rawValue: UserDefaults.standard.string(forKey: "aiProvider") ?? "") ?? .opus
     @Published var night = false
     @Published var guideOpen = false
 
@@ -526,6 +527,11 @@ final class AppModel: ObservableObject {
         return "\(index + 1) / \(photos.count)"
     }
 
+    func setProvider(_ provider: AIProvider) {
+        aiProvider = provider
+        UserDefaults.standard.set(provider.rawValue, forKey: "aiProvider")
+    }
+
     func setFrameStyle(_ style: FrameStyle) {
         frameStyle = style
         UserDefaults.standard.set(style.rawValue, forKey: "frameStyle")
@@ -929,13 +935,15 @@ final class AppModel: ObservableObject {
                     return engine.jpegData(image, maxEdge: 768, quality: 0.8)
                 }.value
                 guard let preview else { throw AIError.badAnswer }
-                let answer = try await ai.describeLook(prompt: text, preview: preview, previous: previous)
+                let provider = self.aiProvider
+                let answer = try await ai.describeLook(prompt: text, preview: preview, previous: previous, provider: provider)
                 if self.current?.id == photo.id {
                     let kept = self.recipe.manual.steps
                     self.mutate { r in r.steps = kept + answer.steps }
                     self.selectedStep = nil
                     self.prompt = ""
-                    self.say(answer.note.isEmpty ? "Look applied." : answer.note, error: false)
+                    let note = answer.note.isEmpty ? "Look applied." : answer.note
+                    self.say(answer.via == provider.title ? note : "\(note) (\(answer.via))", error: false)
                 }
             } catch {
                 self.say((error as? LocalizedError)?.errorDescription ?? error.localizedDescription, error: true)
@@ -1087,6 +1095,7 @@ final class AppModel: ObservableObject {
         let style = frameStyle
         let dark = frameDark
         let note = frameNote
+        let provider = aiProvider
         Task.detached(priority: .userInitiated) {
             var failed = 0
             for (i, photo) in list.enumerated() {
@@ -1097,7 +1106,7 @@ final class AppModel: ObservableObject {
                     lib.loadLayers(for: photo, recipe: recipe, into: layers)
                     let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: layers)
                     var name = photo.url.deletingPathExtension().lastPathComponent
-                    if let preview = engine.jpegData(image, maxEdge: 512, quality: 0.75), let suggestion = try? await ai.suggestName(preview: preview) {
+                    if let preview = engine.jpegData(image, maxEdge: 512, quality: 0.75), let suggestion = try? await ai.suggestName(preview: preview, provider: provider) {
                         name = suggestion
                     }
                     let frame = FrameOptions(style: style, dark: dark, device: photo.meta.deviceName, settings: photo.meta.settingsLine, note: note)
@@ -1138,13 +1147,14 @@ final class AppModel: ObservableObject {
         let masks = masks
         let recipe = recipe
         let ai = ai
+        let provider = aiProvider
         Task {
             let preview = await Task.detached(priority: .userInitiated) {
                 let image = AppModel.finalImage(engine: engine, masker: masker, source: source, recipe: recipe, masks: masks)
                 return engine.jpegData(image, maxEdge: 512, quality: 0.75)
             }.value
             var suggestion: String?
-            if let preview { suggestion = try? await ai.suggestName(preview: preview) }
+            if let preview { suggestion = try? await ai.suggestName(preview: preview, provider: provider) }
             guard var draft = self.exportDraft, self.current?.id == photo.id else { return }
             draft.suggesting = false
             if let suggestion, !draft.touched { draft.name = suggestion }

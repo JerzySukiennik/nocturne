@@ -18,6 +18,8 @@ public enum AIError: LocalizedError {
 public struct LookAnswer: Sendable {
     public let steps: [Step]
     public let note: String
+    public var via = "Gemini (free)"
+    public var usage: AIUsage?
 }
 
 public final class Gemini: @unchecked Sendable {
