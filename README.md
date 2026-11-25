@@ -55,7 +55,7 @@ Builds with SwiftPM, bundles and signs `Nocturne.app`, and copies it to `/Applic
 
 The models are not in the repo. Download `DepthAnythingV2SmallF16.mlpackage` from `apple/coreml-depth-anything-v2-small` and `LaMa.mlpackage` from `mlboydaisuke/LaMa-CoreML` on Hugging Face, compile each with `xcrun coremlcompiler compile` and put the `.mlmodelc` folders in `~/Library/Application Support/Nocturne/Models/`.
 
-The assistant uses Claude by default (`claude-opus-5-5` through the Messages API with structured JSON output, low effort, server-side refusal fallbacks); Photo > AI Model switches to Claude Haiku 5.5 or to free Gemini, and Gemini is the automatic fallback when Claude cannot answer. Keys are read from `~/Library/Application Support/Nocturne/.env` (`ANTHROPIC_API_KEYS`, `GEMINI_API_KEYS`), never from the source.
+The assistant uses Claude by default (`claude-haiku-5-5` through the Messages API with structured JSON output and low effort, about $0.0005 per described look); Photo > AI Model switches to Claude Opus 5.5 or to free Gemini, and Gemini is the automatic fallback when Claude cannot answer. Keys are read from `~/Library/Application Support/Nocturne/.env` (`ANTHROPIC_API_KEYS`, `GEMINI_API_KEYS`), never from the source.
 
 ## Planned
 

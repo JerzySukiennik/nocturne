@@ -53,7 +53,7 @@ final class AppModel: ObservableObject {
     @Published var seriesFrames = 8
     @Published var seriesGap = 3
     @Published var seriesRun: BatchProgress?
-    @Published var aiProvider = AIProvider(rawValue: UserDefaults.standard.string(forKey: "aiProvider") ?? "") ?? .opus
+    @Published var aiProvider = AIProvider(rawValue: UserDefaults.standard.string(forKey: "aiProvider") ?? "") ?? .standard
     @Published var night = false
     @Published var guideOpen = false
 

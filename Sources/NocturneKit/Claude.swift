@@ -6,12 +6,18 @@ public enum AIProvider: String, CaseIterable, Sendable {
     case haiku = "claude-haiku-5-5"
     case gemini = "gemini"
 
+    public static let standard: AIProvider = .haiku
+
     public var title: String {
         switch self {
         case .opus: return "Claude Opus 5.5"
         case .haiku: return "Claude Haiku 5.5"
         case .gemini: return "Gemini (free)"
         }
+    }
+
+    var effort: String {
+        self == .haiku ? "medium" : "low"
     }
 
     var dollarsPerMillion: (input: Double, output: Double) {
@@ -55,43 +61,15 @@ public final class Claude: @unchecked Sendable {
         return raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
-    static let lookSchema: [String: Any] = [
-        "type": "object",
-        "properties": [
-            "steps": [
-                "type": "array",
-                "items": [
-                    "type": "object",
-                    "properties": [
-                        "kind": ["type": "string", "enum": ["light", "color", "grade", "splash", "vignette", "mist", "grain", "lamp", "bokeh", "halation", "bloom", "streaks", "fringe"]],
-                        "name": ["type": "string"],
-                        "mask": ["type": "string", "enum": ["all", "sky", "subject", "person", "background", "near", "far"]],
-                        "params": [
-                            "type": "array",
-                            "items": [
-                                "type": "object",
-                                "properties": ["key": ["type": "string"], "value": ["type": "number"]],
-                                "required": ["key", "value"],
-                                "additionalProperties": false
-                            ] as [String: Any]
-                        ] as [String: Any]
-                    ] as [String: Any],
-                    "required": ["kind", "name", "mask", "params"],
-                    "additionalProperties": false
-                ] as [String: Any]
-            ] as [String: Any],
-            "note": ["type": "string"]
-        ] as [String: Any],
-        "required": ["steps", "note"],
-        "additionalProperties": false
-    ]
+    static let lookSchema = """
+    {"type":"object","properties":{"steps":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string","enum":["light","color","grade","splash","vignette","mist","grain","lamp","bokeh","halation","bloom","streaks","fringe"]},"mask":{"type":"string","enum":["all","sky","subject","person","background","near","far"]},"name":{"type":"string"},"params":{"type":"array","items":{"type":"object","properties":{"key":{"type":"string"},"value":{"type":"number"}},"required":["key","value"],"additionalProperties":false}}},"required":["kind","mask","name","params"],"additionalProperties":false}},"note":{"type":"string"}},"required":["steps","note"],"additionalProperties":false}
+    """
 
-    static let nameSchema: [String: Any] = [
-        "type": "object",
-        "properties": ["name": ["type": "string"]],
-        "required": ["name"],
-        "additionalProperties": false
-    ]
+    static let nameSchema = """
+    {"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}
+    """
+
+    static let schemaSlot = "NOCTURNE_SCHEMA_SLOT"
 
     static let lookExtra = """
 
@@ -106,10 +84,26 @@ public final class Claude: @unchecked Sendable {
         if !old.isEmpty, let data = try? JSONSerialization.data(withJSONObject: old), let json = String(data: data, encoding: .utf8) {
             text += "\n\nYour earlier steps: " + json
         }
-        let (answer, usage) = try await ask(provider: provider, system: Gemini.lookSystem + Claude.lookExtra, text: text, image: preview, schema: Claude.lookSchema)
-        guard let list = answer["steps"] as? [[String: Any]] else { throw AIError.badAnswer }
+        var input = 0
+        var output = 0
+        var dollars = 0.0
+        for _ in 0..<2 {
+            let (answer, usage) = try await ask(provider: provider, system: Gemini.lookSystem + Claude.lookExtra, text: text, image: preview, schema: Claude.lookSchema)
+            input += usage.inputTokens
+            output += usage.outputTokens
+            dollars += usage.dollars
+            let steps = Claude.steps(from: answer)
+            if !steps.isEmpty {
+                let total = AIUsage(model: usage.model, inputTokens: input, outputTokens: output, dollars: dollars)
+                return LookAnswer(steps: steps, note: (answer["note"] as? String) ?? "", via: provider.title, usage: total)
+            }
+        }
+        throw AIError.badAnswer
+    }
+
+    static func steps(from answer: [String: Any]) -> [Step] {
         var steps: [Step] = []
-        for item in list {
+        for item in (answer["steps"] as? [[String: Any]]) ?? [] {
             guard let kindText = item["kind"] as? String, let kind = StepKind(rawValue: kindText), kind != .match, kind != .cleanup else { continue }
             let mask = (item["mask"] as? String).flatMap { MaskKind(rawValue: $0.lowercased()) }
             if steps.contains(where: { $0.kind == kind && $0.mask == mask }) { continue }
@@ -121,8 +115,7 @@ public final class Claude: @unchecked Sendable {
             let step = Step(kind: kind, name: (name?.isEmpty ?? true) ? nil : name, ai: true, params: params, mask: mask)
             if !step.isNeutral { steps.append(step) }
         }
-        guard !steps.isEmpty else { throw AIError.badAnswer }
-        return LookAnswer(steps: steps, note: (answer["note"] as? String) ?? "", via: provider.title, usage: usage)
+        return steps
     }
 
     public func suggestName(preview: Data, provider: AIProvider) async throws -> String {
@@ -132,14 +125,14 @@ public final class Claude: @unchecked Sendable {
         return name
     }
 
-    private func ask(provider: AIProvider, system: String, text: String, image: Data, schema: [String: Any]) async throws -> ([String: Any], AIUsage) {
+    private func ask(provider: AIProvider, system: String, text: String, image: Data, schema: String) async throws -> ([String: Any], AIUsage) {
         let keys = Claude.loadKeys()
         guard !keys.isEmpty else { throw AIError.noKey }
         var body: [String: Any] = [
             "model": provider.rawValue,
             "max_tokens": 16000,
             "system": system,
-            "output_config": ["effort": "low", "format": ["type": "json_schema", "schema": schema]],
+            "output_config": ["effort": ProcessInfo.processInfo.environment["NOCTURNE_EFFORT"] ?? provider.effort, "format": ["type": "json_schema", "schema": Claude.schemaSlot]],
             "messages": [[
                 "role": "user",
                 "content": [
@@ -150,7 +143,10 @@ public final class Claude: @unchecked Sendable {
         ]
         let useFallbacks = provider == .opus
         if useFallbacks { body["fallbacks"] = "default" }
-        let payload = try JSONSerialization.data(withJSONObject: body)
+        let loose = try JSONSerialization.data(withJSONObject: body)
+        guard let payload = String(data: loose, encoding: .utf8)?
+            .replacingOccurrences(of: "\"\(Claude.schemaSlot)\"", with: schema)
+            .data(using: .utf8) else { throw AIError.badAnswer }
         var last = "Claude did not answer."
         for key in keys {
             var busy = 0
@@ -165,6 +161,10 @@ public final class Claude: @unchecked Sendable {
                 let (data, response) = try await session.data(for: request)
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+                if ProcessInfo.processInfo.environment["NOCTURNE_DEBUG"] != nil {
+                    FileHandle.standardError.write(data)
+                    FileHandle.standardError.write(Data("\n".utf8))
+                }
                 if status == 200 {
                     if (root["stop_reason"] as? String) == "refusal" { throw AIError.offline("Claude declined this request.") }
                     let blocks = (root["content"] as? [[String: Any]]) ?? []
